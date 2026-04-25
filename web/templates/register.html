@@ -1,0 +1,61 @@
+{{template "base.html" .}}
+{{define "title"}}注册 - NetworkDisk{{end}}
+{{define "content"}}
+<div class="card" style="max-width:400px;margin:40px auto;">
+    <h2 style="margin-bottom:20px;">注册</h2>
+    <form id="registerForm" onsubmit="handleRegister(event)">
+        <div class="form-group">
+            <label for="username">用户名</label>
+            <input type="text" id="username" name="username" required minlength="3" maxlength="64" autocomplete="username">
+        </div>
+        <div class="form-group">
+            <label for="password">密码</label>
+            <input type="password" id="password" name="password" required minlength="6" autocomplete="new-password">
+        </div>
+        <div class="form-group">
+            <label for="confirmPassword">确认密码</label>
+            <input type="password" id="confirmPassword" name="confirm_password" required minlength="6" autocomplete="new-password">
+        </div>
+        <button type="submit" class="btn btn-primary">注册</button>
+        <div id="registerError" class="error-message"></div>
+    </form>
+    <p style="margin-top:16px;font-size:14px;color:var(--text-secondary);">
+        已有账号？<a href="/login" style="color:var(--primary);">登录</a>
+    </p>
+</div>
+<script>
+async function handleRegister(e) {
+    e.preventDefault();
+    const errorEl = document.getElementById('registerError');
+    errorEl.textContent = '';
+    const password = document.getElementById('password').value;
+    const confirm = document.getElementById('confirmPassword').value;
+    if (password !== confirm) {
+        errorEl.textContent = '两次输入的密码不一致';
+        return;
+    }
+    const body = JSON.stringify({
+        username: document.getElementById('username').value,
+        password: password
+    });
+    try {
+        const resp = await fetch('/api/auth/register', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-Token': getCSRFToken()
+            },
+            body: body
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+            errorEl.textContent = data.error || '注册失败';
+            return;
+        }
+        window.location.href = '/login';
+    } catch (err) {
+        errorEl.textContent = '网络错误';
+    }
+}
+</script>
+{{end}}
