@@ -33,7 +33,17 @@ type DatabaseConfig struct {
 }
 
 type StorageConfig struct {
-	Root string `toml:"root"`
+	Root              string `toml:"root"`
+	MaxFileSize       int64  `toml:"max_file_size"`
+	ThumbnailMaxSize  int64  `toml:"thumbnail_max_size"`
+	ThumbnailQuality  int    `toml:"thumbnail_quality"`
+}
+
+type UploadConfig struct {
+	AllowedExtensions []string `toml:"allowed_extensions"`
+	BlockedExtensions []string `toml:"blocked_extensions"`
+	DetectMime        bool     `toml:"detect_mime"`
+	OnNameConflict    string   `toml:"on_name_conflict"`
 }
 
 type AuthConfig struct {
@@ -53,6 +63,7 @@ type Config struct {
 	Server   ServerConfig   `toml:"server"`
 	Database DatabaseConfig `toml:"database"`
 	Storage  StorageConfig  `toml:"storage"`
+	Upload   UploadConfig   `toml:"upload"`
 	Auth     AuthConfig     `toml:"auth"`
 	Log      LogConfig      `toml:"log"`
 }
@@ -88,7 +99,14 @@ var envMapping = map[string]string{
 	"database.max_open_conns":   "NETWORKDISK_DATABASE_MAX_OPEN_CONNS",
 	"database.max_idle_conns":   "NETWORKDISK_DATABASE_MAX_IDLE_CONNS",
 	"database.conn_max_lifetime": "NETWORKDISK_DATABASE_CONN_MAX_LIFETIME",
-	"storage.root":              "NETWORKDISK_STORAGE_ROOT",
+	"storage.root":                "NETWORKDISK_STORAGE_ROOT",
+	"storage.max_file_size":       "NETWORKDISK_STORAGE_MAX_FILE_SIZE",
+	"storage.thumbnail_max_size":  "NETWORKDISK_STORAGE_THUMBNAIL_MAX_SIZE",
+	"storage.thumbnail_quality":   "NETWORKDISK_STORAGE_THUMBNAIL_QUALITY",
+	"upload.allowed_extensions":   "NETWORKDISK_UPLOAD_ALLOWED_EXTENSIONS",
+	"upload.blocked_extensions":   "NETWORKDISK_UPLOAD_BLOCKED_EXTENSIONS",
+	"upload.detect_mime":          "NETWORKDISK_UPLOAD_DETECT_MIME",
+	"upload.on_name_conflict":     "NETWORKDISK_UPLOAD_ON_NAME_CONFLICT",
 	"auth.jwt_secret":           "NETWORKDISK_AUTH_JWT_SECRET",
 	"auth.jwt_expire":           "NETWORKDISK_AUTH_JWT_EXPIRE",
 	"auth.refresh_expire":       "NETWORKDISK_AUTH_REFRESH_EXPIRE",

@@ -1,0 +1,268 @@
+{{template "base.html" .}}
+{{define "title"}}文件 - NetworkDisk{{end}}
+{{define "nav-right"}}
+<span id="navUsername" style="font-size:14px;color:var(--text-secondary);"></span>
+<button onclick="handleLogout()" style="font-size:14px;color:var(--text);text-decoration:none;background:none;border:none;cursor:pointer;padding:6px 12px;border-radius:6px;">退出</button>
+<button id="themeToggle" class="theme-toggle" onclick="toggleTheme()">🌙</button>
+{{end}}
+{{define "sidebar"}}
+<a href="/">文件</a>
+<a href="/">共享</a>
+{{end}}
+{{define "content"}}
+<div>
+    <div class="toolbar" style="margin-bottom:16px;display:flex;align-items:center;gap:12px;">
+        <button class="btn btn-primary" onclick="showMkdirModal()">新建文件夹</button>
+        <label class="btn" style="cursor:pointer;background:var(--primary);color:#fff;padding:8px 20px;border-radius:6px;font-size:14px;">
+            上传文件
+            <input type="file" id="fileInput" style="display:none" onchange="handleUpload(this)">
+        </label>
+        <button class="btn" style="background:var(--surface);border:1px solid var(--border);" onclick="refreshFiles()">刷新</button>
+    </div>
+    <div id="breadcrumb" style="margin-bottom:12px;font-size:13px;color:var(--text-secondary);">
+        <a href="#" onclick="navigateTo(null);return false;" style="color:var(--primary);text-decoration:none;">根目录</a>
+    </div>
+    <div class="card" style="padding:0;">
+        <table style="width:100%;border-collapse:collapse;">
+            <thead>
+                <tr style="border-bottom:1px solid var(--border);">
+                    <th style="padding:10px 16px;text-align:left;font-size:13px;font-weight:500;color:var(--text-secondary);">名称</th>
+                    <th style="padding:10px 16px;text-align:right;font-size:13px;font-weight:500;color:var(--text-secondary);">大小</th>
+                    <th style="padding:10px 16px;text-align:right;font-size:13px;font-weight:500;color:var(--text-secondary);">创建时间</th>
+                    <th style="padding:10px 16px;text-align:right;font-size:13px;font-weight:500;color:var(--text-secondary);">操作</th>
+                </tr>
+            </thead>
+            <tbody id="fileList">
+                <tr><td colspan="4" style="padding:32px;text-align:center;color:var(--text-secondary);">加载中...</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div id="mkdirModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.4);z-index:200;align-items:center;justify-content:center;">
+    <div style="background:var(--surface);border-radius:8px;padding:24px;min-width:320px;">
+        <h3 style="margin-bottom:16px;">新建文件夹</h3>
+        <div class="form-group">
+            <input type="text" id="dirNameInput" placeholder="文件夹名称" style="max-width:100%;">
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;">
+            <button class="btn" style="background:var(--border);" onclick="hideMkdirModal()">取消</button>
+            <button class="btn btn-primary" onclick="createDir()">创建</button>
+        </div>
+    </div>
+</div>
+
+<div id="renameModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.4);z-index:200;align-items:center;justify-content:center;">
+    <div style="background:var(--surface);border-radius:8px;padding:24px;min-width:320px;">
+        <h3 style="margin-bottom:16px;">重命名</h3>
+        <div class="form-group">
+            <input type="text" id="renameInput" placeholder="新名称" style="max-width:100%;">
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;">
+            <button class="btn" style="background:var(--border);" onclick="hideRenameModal()">取消</button>
+            <button class="btn btn-primary" onclick="doRename()">确认</button>
+        </div>
+    </div>
+</div>
+{{end}}
+{{define "scripts"}}
+<script>
+var currentDir = null;
+var renameFileId = null;
+
+(function() {
+    var token = localStorage.getItem('access_token');
+    if (!token) {
+        window.location.replace('/login');
+        return;
+    }
+    fetch('/api/auth/me', {
+        headers: { 'Authorization': 'Bearer ' + token }
+    }).then(function(r) {
+        if (!r.ok) {
+            localStorage.removeItem('access_token');
+            window.location.replace('/login');
+            return;
+        }
+        return r.json();
+    }).then(function(data) {
+        if (data && data.username) {
+            var el = document.getElementById('navUsername');
+            if (el) el.textContent = data.username;
+        }
+    });
+    refreshFiles();
+})();
+
+function navigateTo(dirId) {
+    currentDir = dirId;
+    refreshFiles();
+}
+
+function refreshFiles() {
+    var url = '/api/files';
+    if (currentDir !== null) url += '?dir_id=' + currentDir;
+    var token = localStorage.getItem('access_token');
+    fetch(url, {
+        headers: { 'Authorization': 'Bearer ' + token }
+    }).then(function(r) {
+        if (!r.ok) throw new Error('failed');
+        return r.json();
+    }).then(function(data) {
+        renderFiles(data.files);
+    }).catch(function() {
+        document.getElementById('fileList').innerHTML = '<tr><td colspan="4" style="padding:32px;text-align:center;color:var(--danger);">加载失败</td></tr>';
+    });
+}
+
+function formatSize(bytes) {
+    if (bytes === 0) return '-';
+    var units = ['B', 'KB', 'MB', 'GB'];
+    var i = 0;
+    var size = bytes;
+    while (size >= 1024 && i < units.length - 1) { size /= 1024; i++; }
+    return size.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+}
+
+function renderFiles(files) {
+    var tbody = document.getElementById('fileList');
+    if (!files || files.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" style="padding:32px;text-align:center;color:var(--text-secondary);">空目录</td></tr>';
+        return;
+    }
+    var html = '';
+    for (var i = 0; i < files.length; i++) {
+        var f = files[i];
+        var icon = f.is_dir ? '📁' : '📄';
+        var nameHtml = f.is_dir
+            ? '<a href="#" onclick="navigateTo(' + f.id + ');return false;" style="color:var(--text);text-decoration:none;">' + icon + ' ' + escapeHtml(f.name) + '</a>'
+            : '<a href="/api/files/download/' + f.id + '" style="color:var(--text);text-decoration:none;">' + icon + ' ' + escapeHtml(f.name) + '</a>';
+        var sizeStr = f.is_dir ? '-' : formatSize(f.size);
+        html += '<tr style="border-bottom:1px solid var(--border);">';
+        html += '<td style="padding:10px 16px;">' + nameHtml + '</td>';
+        html += '<td style="padding:10px 16px;text-align:right;font-size:13px;color:var(--text-secondary);">' + sizeStr + '</td>';
+        html += '<td style="padding:10px 16px;text-align:right;font-size:13px;color:var(--text-secondary);">' + (f.created_at || '').substring(0, 10) + '</td>';
+        html += '<td style="padding:10px 16px;text-align:right;">';
+        html += '<button onclick="showRenameModal(' + f.id + ',\'' + escapeHtml(f.name) + '\')" style="font-size:12px;margin-right:4px;background:none;border:1px solid var(--border);border-radius:4px;padding:3px 8px;cursor:pointer;color:var(--text);">重命名</button>';
+        html += '<button onclick="deleteFile(' + f.id + ')" style="font-size:12px;background:none;border:1px solid var(--danger);border-radius:4px;padding:3px 8px;cursor:pointer;color:var(--danger);">删除</button>';
+        html += '</td>';
+        html += '</tr>';
+    }
+    tbody.innerHTML = html;
+}
+
+function escapeHtml(str) {
+    var div = document.createElement('div');
+    div.appendChild(document.createTextNode(str));
+    return div.innerHTML;
+}
+
+function showMkdirModal() {
+    document.getElementById('mkdirModal').style.display = 'flex';
+    document.getElementById('dirNameInput').value = '';
+    document.getElementById('dirNameInput').focus();
+}
+
+function hideMkdirModal() {
+    document.getElementById('mkdirModal').style.display = 'none';
+}
+
+function showRenameModal(id, name) {
+    renameFileId = id;
+    document.getElementById('renameModal').style.display = 'flex';
+    document.getElementById('renameInput').value = name;
+    document.getElementById('renameInput').focus();
+}
+
+function hideRenameModal() {
+    document.getElementById('renameModal').style.display = 'none';
+    renameFileId = null;
+}
+
+function createDir() {
+    var name = document.getElementById('dirNameInput').value.trim();
+    if (!name) return;
+    var token = localStorage.getItem('access_token');
+    fetch('/api/files/mkdir', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + token,
+            'X-CSRF-Token': getCSRFToken()
+        },
+        body: JSON.stringify({ name: name, parent_id: currentDir })
+    }).then(function(r) {
+        if (r.ok) {
+            hideMkdirModal();
+            refreshFiles();
+        } else {
+            r.json().then(function(d) { alert(d.error || '创建失败'); });
+        }
+    });
+}
+
+function doRename() {
+    var name = document.getElementById('renameInput').value.trim();
+    if (!name || !renameFileId) return;
+    var token = localStorage.getItem('access_token');
+    fetch('/api/files/' + renameFileId, {
+        method: 'PATCH',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + token,
+            'X-CSRF-Token': getCSRFToken()
+        },
+        body: JSON.stringify({ name: name })
+    }).then(function(r) {
+        if (r.ok) {
+            hideRenameModal();
+            refreshFiles();
+        } else {
+            r.json().then(function(d) { alert(d.error || '重命名失败'); });
+        }
+    });
+}
+
+function deleteFile(id) {
+    if (!confirm('确认删除？文件将移至回收站。')) return;
+    var token = localStorage.getItem('access_token');
+    fetch('/api/files/' + id, {
+        method: 'DELETE',
+        headers: {
+            'Authorization': 'Bearer ' + token,
+            'X-CSRF-Token': getCSRFToken()
+        }
+    }).then(function(r) {
+        if (r.ok) {
+            refreshFiles();
+        } else {
+            r.json().then(function(d) { alert(d.error || '删除失败'); });
+        }
+    });
+}
+
+function handleUpload(input) {
+    var file = input.files[0];
+    if (!file) return;
+    var form = new FormData();
+    form.append('file', file);
+    if (currentDir !== null) form.append('dir_id', currentDir);
+    var token = localStorage.getItem('access_token');
+    fetch('/api/files/upload', {
+        method: 'POST',
+        headers: {
+            'Authorization': 'Bearer ' + token,
+            'X-CSRF-Token': getCSRFToken()
+        },
+        body: form
+    }).then(function(r) {
+        if (r.ok) {
+            refreshFiles();
+        } else {
+            r.json().then(function(d) { alert(d.error || '上传失败'); });
+        }
+    });
+    input.value = '';
+}
+</script>
+{{end}}

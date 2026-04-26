@@ -10,7 +10,7 @@ import (
 	"networkdisk/internal/middleware"
 )
 
-func New(authH *handler.AuthHandler, cfg *config.Config) http.Handler {
+func New(authH *handler.AuthHandler, fileH *handler.FileHandler, cfg *config.Config) http.Handler {
 	authMw := middleware.Auth(cfg)
 	csrfMw := middleware.CSRF()
 	rateLimitMw := middleware.RateLimit(10, time.Minute)
@@ -26,12 +26,26 @@ func New(authH *handler.AuthHandler, cfg *config.Config) http.Handler {
 	mux.Handle("GET /api/auth/me", wrap(authH.Me, authMw))
 	mux.Handle("PATCH /api/auth/password", wrap(authH.ChangePassword, authMw, csrfMw))
 
-	templates := template.Must(template.ParseGlob("web/templates/*.html"))
+	mux.Handle("GET /api/files", wrap(fileH.List, authMw))
+	mux.Handle("POST /api/files/upload", wrap(fileH.Upload, authMw, csrfMw))
+	mux.Handle("GET /api/files/download/{id}", wrap(fileH.Download, authMw))
+	mux.Handle("GET /api/files/thumbnail/{id}", wrap(fileH.Thumbnail, authMw))
+	mux.Handle("POST /api/files/mkdir", wrap(fileH.Mkdir, authMw, csrfMw))
+	mux.Handle("PATCH /api/files/{id}", wrap(fileH.Rename, authMw, csrfMw))
+	mux.Handle("DELETE /api/files/{id}", wrap(fileH.Delete, authMw, csrfMw))
+
+	loginTmpl := template.Must(template.ParseFiles("web/templates/base.html", "web/templates/login.html"))
+	registerTmpl := template.Must(template.ParseFiles("web/templates/base.html", "web/templates/register.html"))
+	indexTmpl := template.Must(template.ParseFiles("web/templates/base.html", "web/templates/index.html"))
+
+	mux.Handle("GET /{$}", wrap(func(w http.ResponseWriter, r *http.Request) {
+		indexTmpl.ExecuteTemplate(w, "index.html", nil)
+	}, csrfMw))
 	mux.Handle("GET /login", wrap(func(w http.ResponseWriter, r *http.Request) {
-		templates.ExecuteTemplate(w, "login.html", nil)
+		loginTmpl.ExecuteTemplate(w, "login.html", nil)
 	}, csrfMw))
 	mux.Handle("GET /register", wrap(func(w http.ResponseWriter, r *http.Request) {
-		templates.ExecuteTemplate(w, "register.html", nil)
+		registerTmpl.ExecuteTemplate(w, "register.html", nil)
 	}, csrfMw))
 
 	var h http.Handler = mux

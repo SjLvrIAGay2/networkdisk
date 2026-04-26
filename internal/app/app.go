@@ -13,6 +13,7 @@ import (
 	"networkdisk/internal/logging"
 	"networkdisk/internal/router"
 	"networkdisk/internal/service"
+	"networkdisk/internal/storage"
 	"networkdisk/internal/store"
 )
 
@@ -47,9 +48,18 @@ func Run(configPath string) error {
 		return fmt.Errorf("run migrations: %w", err)
 	}
 
+	fileStorage, err := storage.NewFromConfig(cfg)
+	if err != nil {
+		return fmt.Errorf("init file storage: %w", err)
+	}
+
 	userSvc := service.NewUserService(st, cfg)
+	thumbnailSvc := service.NewThumbnailService(fileStorage, cfg)
+	fileSvc := service.NewFileService(st, fileStorage, thumbnailSvc, cfg)
+
 	authH := handler.NewAuthHandler(userSvc)
-	mux := router.New(authH, cfg)
+	fileH := handler.NewFileHandler(fileSvc)
+	mux := router.New(authH, fileH, cfg)
 
 	srv := &http.Server{
 		Addr:         cfg.Addr(),

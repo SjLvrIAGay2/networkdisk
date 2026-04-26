@@ -17,6 +17,15 @@ conn_max_lifetime = "5m"
 
 [storage]
 root = "./storage"
+max_file_size = 524288000
+thumbnail_max_size = 20971520
+thumbnail_quality = 80
+
+[upload]
+allowed_extensions = []
+blocked_extensions = [".exe", ".sh", ".bat", ".cmd", ".com", ".dll", ".so", ".dylib"]
+detect_mime = true
+on_name_conflict = "rename"
 
 [auth]
 jwt_secret = "dev-secret-do-not-use-in-production"
@@ -26,5 +35,5 @@ bcrypt_cost = 12
 
 [log]
 level = "info"
-format = "json"
+format = "pattern"
 file = "logs/log.log"

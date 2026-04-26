@@ -42,7 +42,7 @@ func Init(cfg *config.Config) error {
 	if cfg.Log.Format == "json" {
 		handler = slog.NewJSONHandler(writer, opts)
 	} else {
-		handler = slog.NewTextHandler(writer, opts)
+		handler = newPatternHandler(writer, opts)
 	}
 	global = slog.New(handler)
 	return nil

@@ -19,3 +19,20 @@ type RefreshToken struct {
 	ExpiresAt time.Time
 	CreatedAt time.Time
 }
+
+type File struct {
+	ID           int64
+	UserID       int64
+	ParentID     *int64
+	Name         string
+	IsDir        bool
+	Size         int64
+	FileHash     string
+	StorageKey   string
+	ThumbnailKey string
+	MimeType     string
+	IsDeleted    bool
+	DeletedAt    *time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
