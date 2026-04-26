@@ -2,7 +2,6 @@ package router
 
 import (
 	"html/template"
-	"log/slog"
 	"net/http"
 	"time"
 
@@ -11,12 +10,12 @@ import (
 	"networkdisk/internal/middleware"
 )
 
-func New(authH *handler.AuthHandler, cfg *config.Config, logger *slog.Logger) http.Handler {
+func New(authH *handler.AuthHandler, cfg *config.Config) http.Handler {
 	authMw := middleware.Auth(cfg)
 	csrfMw := middleware.CSRF()
 	rateLimitMw := middleware.RateLimit(10, time.Minute)
-	loggerMw := middleware.Logger(logger)
-	recoverMw := middleware.Recover(logger)
+	loggerMw := middleware.Logger()
+	recoverMw := middleware.Recover()
 
 	mux := http.NewServeMux()
 

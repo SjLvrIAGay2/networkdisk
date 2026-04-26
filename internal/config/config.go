@@ -46,6 +46,7 @@ type AuthConfig struct {
 type LogConfig struct {
 	Level  string `toml:"level"`
 	Format string `toml:"format"`
+	File   string `toml:"file"`
 }
 
 type Config struct {
@@ -94,6 +95,7 @@ var envMapping = map[string]string{
 	"auth.bcrypt_cost":          "NETWORKDISK_AUTH_BCRYPT_COST",
 	"log.level":                 "NETWORKDISK_LOG_LEVEL",
 	"log.format":                "NETWORKDISK_LOG_FORMAT",
+	"log.file":                  "NETWORKDISK_LOG_FILE",
 }
 
 func Load(path string) (*Config, error) {

@@ -27,3 +27,4 @@ bcrypt_cost = 12
 [log]
 level = "info"
 format = "json"
+file = "logs/log.log"

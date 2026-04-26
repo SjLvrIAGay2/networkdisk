@@ -1,0 +1,12 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "run go server",
+            "type": "shell",
+            "command": "go run cmd/server/main.go",
+            "group": "build",
+            "problemMatcher": []
+        }
+    ]
+}

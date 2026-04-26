@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -11,6 +10,7 @@ import (
 
 	"networkdisk/internal/config"
 	"networkdisk/internal/handler"
+	"networkdisk/internal/logging"
 	"networkdisk/internal/router"
 	"networkdisk/internal/service"
 	"networkdisk/internal/store"
@@ -18,7 +18,6 @@ import (
 
 type App struct {
 	cfg    *config.Config
-	logger *slog.Logger
 	store  *store.Store
 	server *http.Server
 }
@@ -28,7 +27,11 @@ func Run(configPath string) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	logger := newLogger(cfg)
+
+	if err := logging.Init(cfg); err != nil {
+		return fmt.Errorf("init logging: %w", err)
+	}
+	logger := logging.Logger()
 
 	if cfg.Auth.JWTSecret == "" {
 		return fmt.Errorf("auth.jwt_secret must be set")
@@ -46,7 +49,7 @@ func Run(configPath string) error {
 
 	userSvc := service.NewUserService(st, cfg)
 	authH := handler.NewAuthHandler(userSvc)
-	mux := router.New(authH, cfg, logger)
+	mux := router.New(authH, cfg)
 
 	srv := &http.Server{
 		Addr:         cfg.Addr(),
@@ -82,26 +85,4 @@ func Run(configPath string) error {
 	}
 
 	return nil
-}
-
-func newLogger(cfg *config.Config) *slog.Logger {
-	var level slog.Level
-	switch cfg.Log.Level {
-	case "debug":
-		level = slog.LevelDebug
-	case "warn":
-		level = slog.LevelWarn
-	case "error":
-		level = slog.LevelError
-	default:
-		level = slog.LevelInfo
-	}
-	opts := &slog.HandlerOptions{Level: level}
-	var handler slog.Handler
-	if cfg.Log.Format == "json" {
-		handler = slog.NewJSONHandler(os.Stdout, opts)
-	} else {
-		handler = slog.NewTextHandler(os.Stdout, opts)
-	}
-	return slog.New(handler)
 }
