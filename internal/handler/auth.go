@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -20,22 +19,19 @@ func NewAuthHandler(svc *service.UserService) *AuthHandler {
 }
 
 func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
-		return
-	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var in service.RegisterInput
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	user, err := h.svc.Register(in)
 	if err != nil {
 		if errors.Is(err, service.ErrUsernameTaken) {
-			http.Error(w, `{"error":"username already taken"}`, http.StatusConflict)
+			writeError(w, http.StatusConflict, "username already taken")
 			return
 		}
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
@@ -45,22 +41,19 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
-		return
-	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var in service.LoginInput
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	user, tokens, err := h.svc.Login(in)
 	if err != nil {
 		if errors.Is(err, service.ErrInvalidCredentials) {
-			http.Error(w, `{"error":"invalid username or password"}`, http.StatusUnauthorized)
+			writeError(w, http.StatusUnauthorized, "invalid username or password")
 			return
 		}
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
@@ -76,6 +69,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		Name:     "csrf_token",
 		Value:    tokens.CSRFToken,
 		Path:     "/",
+		Secure:   true,
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   86400,
 	})
@@ -89,12 +83,11 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
-		return
-	}
 	if cookie, err := r.Cookie("refresh_token"); err == nil && cookie.Value != "" {
-		h.svc.Logout(cookie.Value)
+		if err := h.svc.Logout(cookie.Value); err != nil {
+				writeError(w, http.StatusInternalServerError, "internal server error")
+				return
+			}
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     "refresh_token",
@@ -109,19 +102,15 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
-		return
-	}
 	userIDStr, _ := r.Context().Value(middleware.UserIDKey).(string)
 	userID, err := strconv.ParseInt(userIDStr, 10, 64)
 	if err != nil {
-		http.Error(w, `{"error":"invalid user"}`, http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "invalid user")
 		return
 	}
 	user, err := h.svc.UserByID(userID)
 	if err != nil {
-		http.Error(w, `{"error":"user not found"}`, http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -131,43 +120,36 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPatch {
-		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
-		return
-	}
 	userIDStr, _ := r.Context().Value(middleware.UserIDKey).(string)
 	userID, err := strconv.ParseInt(userIDStr, 10, 64)
 	if err != nil {
-		http.Error(w, `{"error":"invalid user"}`, http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "invalid user")
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var body struct {
 		OldPassword string `json:"old_password"`
 		NewPassword string `json:"new_password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if err := h.svc.ChangePassword(userID, body.OldPassword, body.NewPassword); err != nil {
 		if errors.Is(err, service.ErrInvalidCredentials) {
-			http.Error(w, `{"error":"invalid old password"}`, http.StatusUnauthorized)
+			writeError(w, http.StatusUnauthorized, "invalid old password")
 			return
 		}
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "password changed"})
 }
 
 func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
-		return
-	}
 	cookie, err := r.Cookie("refresh_token")
 	if err != nil || cookie.Value == "" {
-		http.Error(w, `{"error":"no refresh token"}`, http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "no refresh token")
 		return
 	}
 	user, tokens, err := h.svc.RefreshAccessToken(cookie.Value)
@@ -182,14 +164,14 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 				SameSite: http.SameSiteStrictMode,
 				MaxAge:   -1,
 			})
-			http.Error(w, `{"error":"token revoked, possible theft detected"}`, http.StatusUnauthorized)
+			writeError(w, http.StatusUnauthorized, "token revoked, possible theft detected")
 			return
 		}
-		if errors.Is(err, service.ErrTokenExpired) || errors.Is(err, sql.ErrNoRows) {
-			http.Error(w, `{"error":"refresh token expired"}`, http.StatusUnauthorized)
+		if errors.Is(err, service.ErrTokenExpired) {
+			writeError(w, http.StatusUnauthorized, "refresh token expired")
 			return
 		}
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
@@ -205,6 +187,7 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		Name:     "csrf_token",
 		Value:    tokens.CSRFToken,
 		Path:     "/",
+		Secure:   true,
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   86400,
 	})
@@ -221,4 +204,8 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(data)
+}
+
+func writeError(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, map[string]string{"error": msg})
 }

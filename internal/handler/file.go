@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"strconv"
 
@@ -22,7 +23,7 @@ func NewFileHandler(svc *service.FileService) *FileHandler {
 func (h *FileHandler) List(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromContext(r)
 	if userID == 0 {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
@@ -30,7 +31,7 @@ func (h *FileHandler) List(w http.ResponseWriter, r *http.Request) {
 	if dirStr := r.URL.Query().Get("dir_id"); dirStr != "" {
 		id, err := strconv.ParseInt(dirStr, 10, 64)
 		if err != nil {
-			http.Error(w, `{"error":"invalid dir_id"}`, http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, "invalid dir_id")
 			return
 		}
 		parentID = &id
@@ -38,7 +39,7 @@ func (h *FileHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	files, err := h.svc.ListDirectory(parentID, userID)
 	if err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
@@ -78,18 +79,18 @@ func (h *FileHandler) List(w http.ResponseWriter, r *http.Request) {
 func (h *FileHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromContext(r)
 	if userID == 0 {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		http.Error(w, `{"error":"failed to parse multipart form"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "failed to parse multipart form")
 		return
 	}
 
 	file, header, err := r.FormFile("file")
 	if err != nil {
-		http.Error(w, `{"error":"file field required"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "file field required")
 		return
 	}
 	defer file.Close()
@@ -98,7 +99,7 @@ func (h *FileHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	if dirStr := r.FormValue("dir_id"); dirStr != "" {
 		id, err := strconv.ParseInt(dirStr, 10, 64)
 		if err != nil {
-			http.Error(w, `{"error":"invalid dir_id"}`, http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, "invalid dir_id")
 			return
 		}
 		parentID = &id
@@ -110,11 +111,11 @@ func (h *FileHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrFileTooLarge):
-			http.Error(w, `{"error":"file exceeds maximum size"}`, http.StatusRequestEntityTooLarge)
+			writeError(w, http.StatusRequestEntityTooLarge, "file exceeds maximum size")
 		case errors.Is(err, service.ErrExtensionBlocked):
-			http.Error(w, `{"error":"file extension not allowed"}`, http.StatusUnprocessableEntity)
+			writeError(w, http.StatusUnprocessableEntity, "file extension not allowed")
 		default:
-			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+			writeError(w, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -131,29 +132,30 @@ func (h *FileHandler) Upload(w http.ResponseWriter, r *http.Request) {
 func (h *FileHandler) Download(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromContext(r)
 	if userID == 0 {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		http.Error(w, `{"error":"invalid file id"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid file id")
 		return
 	}
 
 	f, reader, err := h.svc.OpenFile(id, userID)
 	if err != nil {
 		if errors.Is(err, service.ErrFileNotFound) {
-			http.Error(w, `{"error":"file not found"}`, http.StatusNotFound)
+			writeError(w, http.StatusNotFound, "file not found")
 			return
 		}
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	defer reader.Close()
 
-	w.Header().Set("Content-Disposition", `attachment; filename="`+f.Name+`"`)
+	cd := mime.FormatMediaType("attachment", map[string]string{"filename": f.Name})
+	w.Header().Set("Content-Disposition", cd)
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Length", strconv.FormatInt(f.Size, 10))
 	w.WriteHeader(http.StatusOK)
@@ -163,24 +165,24 @@ func (h *FileHandler) Download(w http.ResponseWriter, r *http.Request) {
 func (h *FileHandler) Thumbnail(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromContext(r)
 	if userID == 0 {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		http.Error(w, `{"error":"invalid file id"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid file id")
 		return
 	}
 
 	_, reader, err := h.svc.OpenThumbnail(id, userID)
 	if err != nil {
 		if errors.Is(err, service.ErrFileNotFound) {
-			http.Error(w, `{"error":"thumbnail not found"}`, http.StatusNotFound)
+			writeError(w, http.StatusNotFound, "thumbnail not found")
 			return
 		}
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	defer reader.Close()
@@ -193,26 +195,27 @@ func (h *FileHandler) Thumbnail(w http.ResponseWriter, r *http.Request) {
 func (h *FileHandler) Mkdir(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromContext(r)
 	if userID == 0 {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var body struct {
 		Name     string `json:"name"`
 		ParentID *int64 `json:"parent_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
 	dir, err := h.svc.CreateDir(body.Name, body.ParentID, userID)
 	if err != nil {
 		if errors.Is(err, service.ErrNameConflict) {
-			http.Error(w, `{"error":"name already exists"}`, http.StatusConflict)
+			writeError(w, http.StatusConflict, "name already exists")
 			return
 		}
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
@@ -227,36 +230,37 @@ func (h *FileHandler) Mkdir(w http.ResponseWriter, r *http.Request) {
 func (h *FileHandler) Rename(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromContext(r)
 	if userID == 0 {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		http.Error(w, `{"error":"invalid file id"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid file id")
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var body struct {
 		Name string `json:"name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
 	file, err := h.svc.RenameFile(id, body.Name, userID)
 	if err != nil {
 		if errors.Is(err, service.ErrFileNotFound) {
-			http.Error(w, `{"error":"file not found"}`, http.StatusNotFound)
+			writeError(w, http.StatusNotFound, "file not found")
 			return
 		}
 		if errors.Is(err, service.ErrNameConflict) {
-			http.Error(w, `{"error":"name already exists"}`, http.StatusConflict)
+			writeError(w, http.StatusConflict, "name already exists")
 			return
 		}
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
@@ -269,23 +273,23 @@ func (h *FileHandler) Rename(w http.ResponseWriter, r *http.Request) {
 func (h *FileHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromContext(r)
 	if userID == 0 {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		http.Error(w, `{"error":"invalid file id"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid file id")
 		return
 	}
 
 	if err := h.svc.DeleteFile(id, userID); err != nil {
 		if errors.Is(err, service.ErrFileNotFound) {
-			http.Error(w, `{"error":"file not found"}`, http.StatusNotFound)
+			writeError(w, http.StatusNotFound, "file not found")
 			return
 		}
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 

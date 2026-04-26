@@ -3,7 +3,6 @@ package service
 import (
 	"crypto/rand"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -47,19 +46,15 @@ func (svc *UserService) Register(in RegisterInput) (*model.User, error) {
 	if len(in.Password) < 6 {
 		return nil, fmt.Errorf("password must be at least 6 characters")
 	}
-	exists, err := svc.store.UserExists(in.Username)
-	if err != nil {
-		return nil, fmt.Errorf("check user exists: %w", err)
-	}
-	if exists {
-		return nil, ErrUsernameTaken
-	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), svc.config.Auth.BcryptCost)
 	if err != nil {
 		return nil, fmt.Errorf("hash password: %w", err)
 	}
 	user, err := svc.store.CreateUser(in.Username, string(hash))
 	if err != nil {
+		if errors.Is(err, store.ErrUsernameTaken) {
+			return nil, ErrUsernameTaken
+		}
 		return nil, fmt.Errorf("create user: %w", err)
 	}
 	return user, nil
@@ -81,10 +76,7 @@ func (svc *UserService) Login(in LoginInput) (*model.User, *TokenPair, error) {
 	in.Username = strings.TrimSpace(in.Username)
 	user, err := svc.store.UserByUsername(in.Username)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil, ErrInvalidCredentials
-		}
-		return nil, nil, fmt.Errorf("lookup user: %w", err)
+		return nil, nil, ErrInvalidCredentials
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(in.Password)); err != nil {
 		return nil, nil, ErrInvalidCredentials
@@ -100,10 +92,7 @@ func (svc *UserService) RefreshAccessToken(refreshToken string) (*model.User, *T
 	tokenHash := hashToken(refreshToken)
 	rt, err := svc.store.RefreshTokenByHash(tokenHash)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil, ErrInvalidCredentials
-		}
-		return nil, nil, fmt.Errorf("lookup refresh token: %w", err)
+		return nil, nil, ErrInvalidCredentials
 	}
 	if rt.Revoked {
 		svc.store.RevokeTokenFamily(rt.FamilyID)
@@ -112,22 +101,45 @@ func (svc *UserService) RefreshAccessToken(refreshToken string) (*model.User, *T
 	if time.Now().After(rt.ExpiresAt) {
 		return nil, nil, ErrTokenExpired
 	}
-	svc.store.RevokeRefreshToken(rt.ID)
+
+	tx, err := svc.store.BeginTx()
+	if err != nil {
+		return nil, nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := tx.RevokeRefreshToken(rt.ID); err != nil {
+		return nil, nil, fmt.Errorf("revoke old token: %w", err)
+	}
+
 	user, err := svc.store.UserByID(rt.UserID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("lookup user: %w", err)
 	}
-	newRefreshToken := generateToken()
+
+	newRefreshToken, err := generateToken()
+	if err != nil {
+		return nil, nil, fmt.Errorf("generate refresh token: %w", err)
+	}
 	newTokenHash := hashToken(newRefreshToken)
-	_, err = svc.store.CreateRefreshToken(user.ID, newTokenHash, rt.FamilyID, time.Now().Add(svc.config.RefreshExpireDuration()))
+	_, err = tx.CreateRefreshToken(user.ID, newTokenHash, rt.FamilyID, time.Now().Add(svc.config.RefreshExpireDuration()))
 	if err != nil {
 		return nil, nil, fmt.Errorf("store refresh token: %w", err)
 	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, nil, fmt.Errorf("commit tx: %w", err)
+	}
+
 	accessToken, expiresAt, err := svc.generateAccessToken(user)
 	if err != nil {
 		return nil, nil, fmt.Errorf("generate access token: %w", err)
 	}
-	csrfToken := generateToken()
+
+	csrfToken, err := generateToken()
+	if err != nil {
+		return nil, nil, fmt.Errorf("generate csrf token: %w", err)
+	}
 	return user, &TokenPair{
 		AccessToken:  accessToken,
 		RefreshToken: newRefreshToken,
@@ -136,13 +148,13 @@ func (svc *UserService) RefreshAccessToken(refreshToken string) (*model.User, *T
 	}, nil
 }
 
-func (svc *UserService) Logout(refreshToken string) {
+func (svc *UserService) Logout(refreshToken string) error {
 	tokenHash := hashToken(refreshToken)
 	rt, err := svc.store.RefreshTokenByHash(tokenHash)
 	if err != nil {
-		return
+		return nil
 	}
-	svc.store.RevokeRefreshToken(rt.ID)
+	return svc.store.RevokeRefreshToken(rt.ID)
 }
 
 func (svc *UserService) ChangePassword(userID int64, oldPassword, newPassword string) error {
@@ -175,14 +187,20 @@ func (svc *UserService) issueTokens(user *model.User) (*TokenPair, error) {
 	if err != nil {
 		return nil, err
 	}
-	refreshToken := generateToken()
+	refreshToken, err := generateToken()
+	if err != nil {
+		return nil, fmt.Errorf("generate refresh token: %w", err)
+	}
 	tokenHash := hashToken(refreshToken)
-	familyID := generateToken()[:36]
+	familyID := refreshToken[:36]
 	_, err = svc.store.CreateRefreshToken(user.ID, tokenHash, familyID, time.Now().Add(svc.config.RefreshExpireDuration()))
 	if err != nil {
 		return nil, err
 	}
-	csrfToken := generateToken()
+	csrfToken, err := generateToken()
+	if err != nil {
+		return nil, fmt.Errorf("generate csrf token: %w", err)
+	}
 	return &TokenPair{
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
@@ -195,6 +213,8 @@ func (svc *UserService) generateAccessToken(user *model.User) (string, time.Time
 	now := time.Now()
 	expiresAt := now.Add(svc.config.JWTExpireDuration())
 	claims := jwt.MapClaims{
+		"iss": "networkdisk",
+		"aud": "networkdisk",
 		"sub": fmt.Sprintf("%d", user.ID),
 		"usr": user.Username,
 		"iat": now.Unix(),
@@ -208,10 +228,12 @@ func (svc *UserService) generateAccessToken(user *model.User) (string, time.Time
 	return signed, expiresAt, nil
 }
 
-func generateToken() string {
+func generateToken() (string, error) {
 	b := make([]byte, 32)
-	rand.Read(b)
-	return hex.EncodeToString(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate token: %w", err)
+	}
+	return hex.EncodeToString(b), nil
 }
 
 func hashToken(token string) string {

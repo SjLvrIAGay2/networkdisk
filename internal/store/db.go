@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"fmt"
@@ -32,7 +33,7 @@ func New(dsn string, maxOpen, maxIdle int, connMaxLifetime time.Duration) (*Stor
 }
 
 func (s *Store) RunMigrations(dir string) error {
-	if _, err := s.DB.Exec("CREATE TABLE IF NOT EXISTS schema_versions (version INT NOT NULL PRIMARY KEY, filename VARCHAR(255) NOT NULL, applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, checksum VARCHAR(64) NOT NULL, UNIQUE KEY uq_filename (filename)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); err != nil {
+	if _, err := s.DB.ExecContext(context.Background(), "CREATE TABLE IF NOT EXISTS schema_versions (version INT NOT NULL PRIMARY KEY, filename VARCHAR(255) NOT NULL, applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, checksum VARCHAR(64) NOT NULL, UNIQUE KEY uq_filename (filename)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"); err != nil {
 		return fmt.Errorf("bootstrap schema_versions: %w", err)
 	}
 	entries, err := os.ReadDir(dir)
@@ -50,18 +51,18 @@ func (s *Store) RunMigrations(dir string) error {
 		}
 		parts := strings.SplitN(e.Name(), "_", 2)
 		if len(parts) < 2 {
-			continue
+			return fmt.Errorf("invalid migration filename %q: must use NNN_name.sql format", e.Name())
 		}
 		v, err := strconv.Atoi(parts[0])
 		if err != nil {
-			continue
+			return fmt.Errorf("invalid migration version in %q: %w", e.Name(), err)
 		}
 		files = append(files, migration{version: v, filename: e.Name()})
 	}
 	sort.Slice(files, func(i, j int) bool {
 		return files[i].version < files[j].version
 	})
-	appliedRows, err := s.DB.Query("SELECT version, checksum FROM schema_versions ORDER BY version")
+	appliedRows, err := s.DB.QueryContext(context.Background(), "SELECT version, checksum FROM schema_versions ORDER BY version")
 	if err != nil {
 		return fmt.Errorf("query schema_versions: %w", err)
 	}
@@ -74,6 +75,9 @@ func (s *Store) RunMigrations(dir string) error {
 			return fmt.Errorf("scan schema_versions: %w", err)
 		}
 		applied[v] = cs
+	}
+	if err := appliedRows.Err(); err != nil {
+		return fmt.Errorf("iterate schema_versions: %w", err)
 	}
 	for _, f := range files {
 		content, err := os.ReadFile(dir + "/" + f.filename)
@@ -92,23 +96,30 @@ func (s *Store) RunMigrations(dir string) error {
 		if err != nil {
 			return fmt.Errorf("begin tx for %s: %w", f.filename, err)
 		}
+		committed := false
+		defer func() {
+			if !committed {
+				if err := tx.Rollback(); err != nil {
+					fmt.Fprintf(os.Stderr, "rollback migration %s failed: %v\n", f.filename, err)
+				}
+			}
+		}()
 		for _, stmt := range strings.Split(contentStr, ";") {
 			stmt = strings.TrimSpace(stmt)
 			if stmt == "" {
 				continue
 			}
-			if _, err := tx.Exec(stmt); err != nil {
-				tx.Rollback()
+			if _, err := tx.ExecContext(context.Background(), stmt); err != nil {
 				return fmt.Errorf("exec %s: %w", f.filename, err)
 			}
 		}
-		if _, err := tx.Exec("INSERT INTO schema_versions (version, filename, checksum) VALUES (?, ?, ?)", f.version, f.filename, sum); err != nil {
-			tx.Rollback()
+		if _, err := tx.ExecContext(context.Background(), "INSERT INTO schema_versions (version, filename, checksum) VALUES (?, ?, ?)", f.version, f.filename, sum); err != nil {
 			return fmt.Errorf("record migration %s: %w", f.filename, err)
 		}
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit migration %s: %w", f.filename, err)
 		}
+		committed = true
 	}
 	return nil
 }

@@ -3,36 +3,49 @@ package model
 import "time"
 
 type User struct {
-	ID           int64
-	Username     string
-	PasswordHash string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	ID           int64  `json:"id"`
+	Username     string `json:"username"`
+	PasswordHash string `json:"-"`
+	StorageUsed  int64  `json:"storage_used"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 type RefreshToken struct {
-	ID        int64
-	UserID    int64
-	TokenHash string
-	FamilyID  string
-	Revoked   bool
-	ExpiresAt time.Time
-	CreatedAt time.Time
+	ID        int64     `json:"id"`
+	UserID    int64     `json:"user_id"`
+	TokenHash string    `json:"-"`
+	FamilyID  string    `json:"family_id"`
+	Revoked   bool      `json:"revoked"`
+	ExpiresAt time.Time `json:"expires_at"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type File struct {
-	ID           int64
-	UserID       int64
-	ParentID     *int64
-	Name         string
-	IsDir        bool
-	Size         int64
-	FileHash     string
-	StorageKey   string
-	ThumbnailKey string
-	MimeType     string
-	IsDeleted    bool
-	DeletedAt    *time.Time
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	ID           int64      `json:"id"`
+	UserID       int64      `json:"user_id"`
+	ParentID     *int64     `json:"parent_id"`
+	Name         string     `json:"name"`
+	IsDir        bool       `json:"is_dir"`
+	Size         int64      `json:"size"`
+	FileHash     string     `json:"file_hash"`
+	StorageKey   string     `json:"storage_key"`
+	ThumbnailKey string     `json:"thumbnail_key"`
+	MimeType     string     `json:"mime_type"`
+	IsStarred    bool       `json:"is_starred"`
+	IsDeleted    bool       `json:"is_deleted"`
+	DeletedAt    *time.Time `json:"deleted_at,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+}
+
+type AuditLog struct {
+	ID         int64     `json:"id"`
+	UserID     int64     `json:"user_id"`
+	Action     string    `json:"action"`
+	TargetType string    `json:"target_type"`
+	TargetID   int64     `json:"target_id"`
+	Detail     string    `json:"detail"`
+	IP         string    `json:"ip"`
+	CreatedAt  time.Time `json:"created_at"`
 }

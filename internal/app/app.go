@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -56,10 +57,12 @@ func Run(configPath string) error {
 	userSvc := service.NewUserService(st, cfg)
 	thumbnailSvc := service.NewThumbnailService(fileStorage, cfg)
 	fileSvc := service.NewFileService(st, fileStorage, thumbnailSvc, cfg)
+	fileSvc.CleanupTempFiles()
 
 	authH := handler.NewAuthHandler(userSvc)
 	fileH := handler.NewFileHandler(fileSvc)
-	mux := router.New(authH, fileH, cfg)
+	mux, stopRateLimiter := router.New(authH, fileH, cfg)
+	defer stopRateLimiter()
 
 	srv := &http.Server{
 		Addr:         cfg.Addr(),
@@ -72,18 +75,25 @@ func Run(configPath string) error {
 		logger.Info("config reloaded")
 	})
 
+	serverErr := make(chan error, 1)
 	go func() {
 		logger.Info("server starting", "addr", srv.Addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("server error", "error", err)
-			os.Exit(1)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErr <- err
 		}
 	}()
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	sig := <-quit
-	logger.Info("shutting down", "signal", sig.String())
+
+	select {
+	case err := <-serverErr:
+		logger.Error("server error", "error", err)
+		close(reloadDone)
+		return err
+	case sig := <-quit:
+		logger.Info("shutting down", "signal", sig.String())
+	}
 
 	close(reloadDone)
 

@@ -52,10 +52,19 @@ func (svc *FileService) UploadFile(r io.Reader, name string, parentID *int64, us
 	if name == "" {
 		return nil, fmt.Errorf("file name required")
 	}
+	if len(name) > 255 {
+		return nil, fmt.Errorf("file name too long")
+	}
 
 	ext := strings.ToLower(filepath.Ext(name))
 	if err := svc.validateExtension(ext); err != nil {
 		return nil, err
+	}
+
+	if parentID != nil {
+		if err := svc.validateParentDir(*parentID, userID); err != nil {
+			return nil, err
+		}
 	}
 
 	tmpFile, tmpPath, err := svc.createTempFile()
@@ -64,8 +73,9 @@ func (svc *FileService) UploadFile(r io.Reader, name string, parentID *int64, us
 	}
 	defer os.Remove(tmpPath)
 
+	limited := io.LimitReader(r, svc.cfg.Storage.MaxFileSize+1)
 	hasher := sha256.New()
-	tee := io.TeeReader(r, hasher)
+	tee := io.TeeReader(limited, hasher)
 	written, err := io.Copy(tmpFile, tee)
 	if err != nil {
 		tmpFile.Close()
@@ -90,7 +100,10 @@ func (svc *FileService) UploadFile(r io.Reader, name string, parentID *int64, us
 	}
 
 	if existingFile != nil {
-		name = svc.resolveNameConflict(name, ext, parentID, userID)
+		name, err = svc.resolveNameConflict(name, ext, parentID, userID)
+		if err != nil {
+			return nil, fmt.Errorf("resolve name conflict: %w", err)
+		}
 		file, err := svc.createFileRecord(userID, parentID, name, written, hash, existingFile.StorageKey, "", mimeType, false)
 		if err != nil {
 			return nil, err
@@ -101,8 +114,14 @@ func (svc *FileService) UploadFile(r io.Reader, name string, parentID *int64, us
 		return &UploadResult{File: file, Duplicate: true}, nil
 	}
 
-	name = svc.resolveNameConflict(name, ext, parentID, userID)
-	storageKey := svc.generateStorageKey(ext)
+	name, err = svc.resolveNameConflict(name, ext, parentID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve name conflict: %w", err)
+	}
+	storageKey, err := generateStorageKey(ext)
+	if err != nil {
+		return nil, fmt.Errorf("generate storage key: %w", err)
+	}
 	finalPath := svc.fileStore.Path(storageKey)
 
 	if err := os.MkdirAll(filepath.Dir(finalPath), 0755); err != nil {
@@ -153,6 +172,16 @@ func (svc *FileService) CreateDir(name string, parentID *int64, userID int64) (*
 	if name == "" {
 		return nil, fmt.Errorf("directory name required")
 	}
+	if len(name) > 255 {
+		return nil, fmt.Errorf("directory name too long")
+	}
+
+	if parentID != nil {
+		if err := svc.validateParentDir(*parentID, userID); err != nil {
+			return nil, err
+		}
+	}
+
 	exists, err := svc.store.FileNameExists(parentID, userID, name)
 	if err != nil {
 		return nil, fmt.Errorf("check name exists: %w", err)
@@ -167,6 +196,9 @@ func (svc *FileService) RenameFile(fileID int64, name string, userID int64) (*mo
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, fmt.Errorf("name required")
+	}
+	if len(name) > 255 {
+		return nil, fmt.Errorf("name too long")
 	}
 	f, err := svc.store.FileByID(fileID)
 	if err != nil {
@@ -249,6 +281,34 @@ func (svc *FileService) OpenThumbnail(fileID int64, userID int64) (*model.File, 
 	return f, reader, nil
 }
 
+func (svc *FileService) CleanupTempFiles() {
+	tmpDir := filepath.Join(svc.fileStore.Root, "tmp")
+	matches, _ := filepath.Glob(filepath.Join(tmpDir, "upload-*.tmp"))
+	for _, m := range matches {
+		os.Remove(m)
+	}
+}
+
+func (svc *FileService) validateParentDir(parentID int64, userID int64) error {
+	dir, err := svc.store.FileByID(parentID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("parent directory not found")
+		}
+		return fmt.Errorf("lookup parent directory: %w", err)
+	}
+	if !dir.IsDir {
+		return fmt.Errorf("parent is not a directory")
+	}
+	if dir.UserID != userID {
+		return ErrFileNotFound
+	}
+	if dir.IsDeleted {
+		return fmt.Errorf("parent directory is deleted")
+	}
+	return nil
+}
+
 func (svc *FileService) createFileRecord(userID int64, parentID *int64, name string, size int64, fileHash, storageKey, thumbnailKey, mimeType string, isDir bool) (*model.File, error) {
 	f := &model.File{
 		UserID:       userID,
@@ -281,25 +341,43 @@ func (svc *FileService) validateExtension(ext string) error {
 	return nil
 }
 
-func (svc *FileService) resolveNameConflict(desiredName, ext string, parentID *int64, userID int64) string {
+func (svc *FileService) resolveNameConflict(desiredName, ext string, parentID *int64, userID int64) (string, error) {
 	exists, err := svc.store.FileNameExists(parentID, userID, desiredName)
-	if err != nil || !exists {
-		return desiredName
+	if err != nil {
+		return "", fmt.Errorf("check name exists: %w", err)
+	}
+	if !exists {
+		return desiredName, nil
 	}
 
 	switch svc.cfg.Upload.OnNameConflict {
 	case "overwrite":
-		return desiredName
+		existing, err := svc.store.FileByName(parentID, userID, desiredName)
+		if err != nil {
+			return "", fmt.Errorf("lookup existing file: %w", err)
+		}
+		if existing == nil {
+			return desiredName, nil
+		}
+		if err := svc.store.SoftDeleteFile(existing.ID); err != nil {
+			return "", fmt.Errorf("soft delete existing: %w", err)
+		}
+		if !existing.IsDir && existing.Size > 0 {
+			if err := svc.store.UpdateUserStorageUsed(userID, -existing.Size); err != nil {
+				return "", fmt.Errorf("update storage for overwrite: %w", err)
+			}
+		}
+		return desiredName, nil
 	default:
 		base := strings.TrimSuffix(desiredName, ext)
 		for i := 1; i < 1000; i++ {
 			candidate := fmt.Sprintf("%s (%d)%s", base, i, ext)
 			exists, err := svc.store.FileNameExists(parentID, userID, candidate)
 			if err != nil || !exists {
-				return candidate
+				return candidate, nil
 			}
 		}
-		return desiredName
+		return desiredName, nil
 	}
 }
 
@@ -310,7 +388,10 @@ func (svc *FileService) detectMime(path string) string {
 	}
 	defer f.Close()
 	head := make([]byte, 8192)
-	n, _ := io.ReadFull(f, head)
+	n, err := io.ReadFull(f, head)
+	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+		return ""
+	}
 	kind, err := filetype.Match(head[:n])
 	if err != nil {
 		return ""
@@ -330,12 +411,14 @@ func (svc *FileService) createTempFile() (*os.File, string, error) {
 	return tmpFile, tmpFile.Name(), nil
 }
 
-func (svc *FileService) generateStorageKey(ext string) string {
+func generateStorageKey(ext string) (string, error) {
 	b := make([]byte, 16)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate random key: %w", err)
+	}
 	key := hex.EncodeToString(b)
 	if ext != "" {
 		key += ext
 	}
-	return key
+	return key, nil
 }

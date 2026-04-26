@@ -69,6 +69,48 @@
 <script>
 var currentDir = null;
 var renameFileId = null;
+var refreshPromise = null;
+
+function apiFetch(url, options) {
+    var token = localStorage.getItem('access_token');
+    options = options || {};
+    options.headers = options.headers || {};
+    if (token) {
+        options.headers['Authorization'] = 'Bearer ' + token;
+    }
+    options.credentials = 'same-origin';
+    return fetch(url, options).then(function(r) {
+        if (r.status === 401 && token) {
+            if (!refreshPromise) {
+                refreshPromise = fetch('/api/auth/refresh', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'X-CSRF-Token': getCSRFToken() }
+                }).then(function(refreshR) {
+                    if (!refreshR.ok) {
+                        localStorage.removeItem('access_token');
+                        window.location.replace('/login');
+                        throw new Error('session expired');
+                    }
+                    return refreshR.json();
+                }).then(function(data) {
+                    localStorage.setItem('access_token', data.access_token);
+                    if (data.csrf_token) {
+                        document.cookie = 'csrf_token=' + data.csrf_token + ';path=/;SameSite=Strict;Secure;max-age=86400';
+                    }
+                    return data;
+                }).finally(function() {
+                    refreshPromise = null;
+                });
+            }
+            return refreshPromise.then(function(data) {
+                options.headers['Authorization'] = 'Bearer ' + data.access_token;
+                return fetch(url, options);
+            });
+        }
+        return r;
+    });
+}
 
 (function() {
     var token = localStorage.getItem('access_token');
@@ -76,9 +118,7 @@ var renameFileId = null;
         window.location.replace('/login');
         return;
     }
-    fetch('/api/auth/me', {
-        headers: { 'Authorization': 'Bearer ' + token }
-    }).then(function(r) {
+    apiFetch('/api/auth/me', {}).then(function(r) {
         if (!r.ok) {
             localStorage.removeItem('access_token');
             window.location.replace('/login');
@@ -90,9 +130,38 @@ var renameFileId = null;
             var el = document.getElementById('navUsername');
             if (el) el.textContent = data.username;
         }
+    }).catch(function() {
+        localStorage.removeItem('access_token');
+        window.location.replace('/login');
     });
     refreshFiles();
 })();
+
+function handleLogout() {
+    var token = localStorage.getItem('access_token');
+    fetch('/api/auth/logout', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+            'Authorization': 'Bearer ' + (token || ''),
+            'X-CSRF-Token': getCSRFToken()
+        }
+    }).finally(function() {
+        localStorage.removeItem('access_token');
+        window.location.replace('/login');
+    });
+}
+
+function getCSRFToken() {
+    var cookies = document.cookie.split(';');
+    for (var i = 0; i < cookies.length; i++) {
+        var c = cookies[i].trim();
+        if (c.startsWith('csrf_token=')) {
+            return c.substring('csrf_token='.length);
+        }
+    }
+    return '';
+}
 
 function navigateTo(dirId) {
     currentDir = dirId;
@@ -102,10 +171,7 @@ function navigateTo(dirId) {
 function refreshFiles() {
     var url = '/api/files';
     if (currentDir !== null) url += '?dir_id=' + currentDir;
-    var token = localStorage.getItem('access_token');
-    fetch(url, {
-        headers: { 'Authorization': 'Bearer ' + token }
-    }).then(function(r) {
+    apiFetch(url, {}).then(function(r) {
         if (!r.ok) throw new Error('failed');
         return r.json();
     }).then(function(data) {
@@ -122,6 +188,16 @@ function formatSize(bytes) {
     var size = bytes;
     while (size >= 1024 && i < units.length - 1) { size /= 1024; i++; }
     return size.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+}
+
+function escapeJsAttr(str) {
+    return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+function escapeHtml(str) {
+    var div = document.createElement('div');
+    div.appendChild(document.createTextNode(str));
+    return div.innerHTML;
 }
 
 function renderFiles(files) {
@@ -143,18 +219,12 @@ function renderFiles(files) {
         html += '<td style="padding:10px 16px;text-align:right;font-size:13px;color:var(--text-secondary);">' + sizeStr + '</td>';
         html += '<td style="padding:10px 16px;text-align:right;font-size:13px;color:var(--text-secondary);">' + (f.created_at || '').substring(0, 10) + '</td>';
         html += '<td style="padding:10px 16px;text-align:right;">';
-        html += '<button onclick="showRenameModal(' + f.id + ',\'' + escapeHtml(f.name) + '\')" style="font-size:12px;margin-right:4px;background:none;border:1px solid var(--border);border-radius:4px;padding:3px 8px;cursor:pointer;color:var(--text);">重命名</button>';
+        html += '<button onclick="showRenameModal(' + f.id + ',\'' + escapeJsAttr(f.name) + '\')" style="font-size:12px;margin-right:4px;background:none;border:1px solid var(--border);border-radius:4px;padding:3px 8px;cursor:pointer;color:var(--text);">重命名</button>';
         html += '<button onclick="deleteFile(' + f.id + ')" style="font-size:12px;background:none;border:1px solid var(--danger);border-radius:4px;padding:3px 8px;cursor:pointer;color:var(--danger);">删除</button>';
         html += '</td>';
         html += '</tr>';
     }
     tbody.innerHTML = html;
-}
-
-function escapeHtml(str) {
-    var div = document.createElement('div');
-    div.appendChild(document.createTextNode(str));
-    return div.innerHTML;
 }
 
 function showMkdirModal() {
@@ -182,12 +252,10 @@ function hideRenameModal() {
 function createDir() {
     var name = document.getElementById('dirNameInput').value.trim();
     if (!name) return;
-    var token = localStorage.getItem('access_token');
-    fetch('/api/files/mkdir', {
+    apiFetch('/api/files/mkdir', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
-            'Authorization': 'Bearer ' + token,
             'X-CSRF-Token': getCSRFToken()
         },
         body: JSON.stringify({ name: name, parent_id: currentDir })
@@ -198,18 +266,16 @@ function createDir() {
         } else {
             r.json().then(function(d) { alert(d.error || '创建失败'); });
         }
-    });
+    }).catch(function() { alert('创建失败'); });
 }
 
 function doRename() {
     var name = document.getElementById('renameInput').value.trim();
     if (!name || !renameFileId) return;
-    var token = localStorage.getItem('access_token');
-    fetch('/api/files/' + renameFileId, {
+    apiFetch('/api/files/' + renameFileId, {
         method: 'PATCH',
         headers: {
             'Content-Type': 'application/json',
-            'Authorization': 'Bearer ' + token,
             'X-CSRF-Token': getCSRFToken()
         },
         body: JSON.stringify({ name: name })
@@ -220,16 +286,14 @@ function doRename() {
         } else {
             r.json().then(function(d) { alert(d.error || '重命名失败'); });
         }
-    });
+    }).catch(function() { alert('重命名失败'); });
 }
 
 function deleteFile(id) {
     if (!confirm('确认删除？文件将移至回收站。')) return;
-    var token = localStorage.getItem('access_token');
-    fetch('/api/files/' + id, {
+    apiFetch('/api/files/' + id, {
         method: 'DELETE',
         headers: {
-            'Authorization': 'Bearer ' + token,
             'X-CSRF-Token': getCSRFToken()
         }
     }).then(function(r) {
@@ -238,7 +302,7 @@ function deleteFile(id) {
         } else {
             r.json().then(function(d) { alert(d.error || '删除失败'); });
         }
-    });
+    }).catch(function() { alert('删除失败'); });
 }
 
 function handleUpload(input) {
@@ -247,11 +311,9 @@ function handleUpload(input) {
     var form = new FormData();
     form.append('file', file);
     if (currentDir !== null) form.append('dir_id', currentDir);
-    var token = localStorage.getItem('access_token');
-    fetch('/api/files/upload', {
+    apiFetch('/api/files/upload', {
         method: 'POST',
         headers: {
-            'Authorization': 'Bearer ' + token,
             'X-CSRF-Token': getCSRFToken()
         },
         body: form
@@ -261,7 +323,7 @@ function handleUpload(input) {
         } else {
             r.json().then(function(d) { alert(d.error || '上传失败'); });
         }
-    });
+    }).catch(function() { alert('上传失败'); });
     input.value = '';
 }
 </script>

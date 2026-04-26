@@ -32,7 +32,11 @@ func Auth(cfg *config.Config) func(http.Handler) http.Handler {
 					return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 				}
 				return []byte(cfg.Auth.JWTSecret), nil
-			})
+			},
+				jwt.WithIssuer("networkdisk"),
+				jwt.WithAudience("networkdisk"),
+				jwt.WithExpirationRequired(),
+			)
 			if err != nil || !token.Valid {
 				http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
 				return

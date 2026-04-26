@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -11,11 +12,11 @@ type rateBucket struct {
 }
 
 type RateLimiter struct {
-	mu       sync.Mutex
-	buckets  map[string]*rateBucket
-	limit    int
-	window   time.Duration
-	stopCh   chan struct{}
+	mu      sync.Mutex
+	buckets map[string]*rateBucket
+	limit   int
+	window  time.Duration
+	stopCh  chan struct{}
 }
 
 func NewRateLimiter(limit int, window time.Duration) *RateLimiter {
@@ -86,19 +87,19 @@ func (rl *RateLimiter) Allow(key string) bool {
 	return true
 }
 
-func RateLimit(limit int, window time.Duration) func(http.Handler) http.Handler {
+func RateLimit(limit int, window time.Duration) (func(http.Handler) http.Handler, func()) {
 	rl := NewRateLimiter(limit, window)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ip := r.Header.Get("X-Forwarded-For")
-			if ip == "" {
-				ip = r.RemoteAddr
+			host, _, err := net.SplitHostPort(r.RemoteAddr)
+			if err != nil {
+				host = r.RemoteAddr
 			}
-			if !rl.Allow(ip) {
+			if !rl.Allow(host) {
 				http.Error(w, `{"error":"rate limit exceeded"}`, http.StatusTooManyRequests)
 				return
 			}
 			next.ServeHTTP(w, r)
 		})
-	}
+	}, rl.Stop
 }

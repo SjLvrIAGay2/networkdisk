@@ -3,17 +3,18 @@ package router
 import (
 	"html/template"
 	"net/http"
-	"time"
 
 	"networkdisk/internal/config"
 	"networkdisk/internal/handler"
 	"networkdisk/internal/middleware"
 )
 
-func New(authH *handler.AuthHandler, fileH *handler.FileHandler, cfg *config.Config) http.Handler {
+type StopFunc func()
+
+func New(authH *handler.AuthHandler, fileH *handler.FileHandler, cfg *config.Config) (http.Handler, StopFunc) {
 	authMw := middleware.Auth(cfg)
 	csrfMw := middleware.CSRF()
-	rateLimitMw := middleware.RateLimit(10, time.Minute)
+	rateLimitMw, stopRateLimiter := middleware.RateLimit(cfg.Server.RateLimit, cfg.RateLimitWindowDuration())
 	loggerMw := middleware.Logger()
 	recoverMw := middleware.Recover()
 
@@ -51,7 +52,7 @@ func New(authH *handler.AuthHandler, fileH *handler.FileHandler, cfg *config.Con
 	var h http.Handler = mux
 	h = recoverMw(h)
 	h = loggerMw(h)
-	return h
+	return h, stopRateLimiter
 }
 
 type middlewareFunc func(http.Handler) http.Handler

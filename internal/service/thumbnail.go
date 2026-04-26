@@ -10,6 +10,7 @@ import (
 	"github.com/disintegration/imaging"
 
 	"networkdisk/internal/config"
+	"networkdisk/internal/logging"
 	"networkdisk/internal/storage"
 )
 
@@ -27,8 +28,22 @@ func (ts *ThumbnailService) Generate(fileID int64, storageKey string, mimeType s
 		return
 	}
 	go func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				logging.Logger().Error("thumbnail generation panicked",
+					"panic", rec,
+					"file_id", fileID,
+					"storage_key", storageKey,
+				)
+			}
+		}()
 		thumbnailKey, err := ts.generate(storageKey)
 		if err != nil {
+			logging.Logger().Error("thumbnail generation failed",
+				"error", err,
+				"file_id", fileID,
+				"storage_key", storageKey,
+			)
 			return
 		}
 		onComplete(fileID, thumbnailKey)
