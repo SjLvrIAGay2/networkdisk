@@ -7,10 +7,15 @@ import (
 	"mime"
 	"net/http"
 	"strconv"
+	"strings"
 
+	"networkdisk/internal/logging"
 	"networkdisk/internal/middleware"
+	"networkdisk/internal/model"
 	"networkdisk/internal/service"
 )
+
+const maxUploadMemory = 32 << 20
 
 type FileHandler struct {
 	svc *service.FileService
@@ -23,7 +28,7 @@ func NewFileHandler(svc *service.FileService) *FileHandler {
 func (h *FileHandler) List(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromContext(r)
 	if userID == 0 {
-		writeError(w, http.StatusUnauthorized, "unauthorized")
+		writeError(w, http.StatusUnauthorized, "未授权")
 		return
 	}
 
@@ -31,7 +36,7 @@ func (h *FileHandler) List(w http.ResponseWriter, r *http.Request) {
 	if dirStr := r.URL.Query().Get("dir_id"); dirStr != "" {
 		id, err := strconv.ParseInt(dirStr, 10, 64)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid dir_id")
+			writeError(w, http.StatusBadRequest, "无效的目录ID")
 			return
 		}
 		parentID = &id
@@ -39,7 +44,8 @@ func (h *FileHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	files, err := h.svc.ListDirectory(parentID, userID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal server error")
+		logging.Logger().Error("list files failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
 
@@ -79,18 +85,18 @@ func (h *FileHandler) List(w http.ResponseWriter, r *http.Request) {
 func (h *FileHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromContext(r)
 	if userID == 0 {
-		writeError(w, http.StatusUnauthorized, "unauthorized")
+		writeError(w, http.StatusUnauthorized, "未授权")
 		return
 	}
 
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		writeError(w, http.StatusBadRequest, "failed to parse multipart form")
+	if err := r.ParseMultipartForm(maxUploadMemory); err != nil {
+		writeError(w, http.StatusBadRequest, "解析上传表单失败")
 		return
 	}
 
 	file, header, err := r.FormFile("file")
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "file field required")
+		writeError(w, http.StatusBadRequest, "请选择文件")
 		return
 	}
 	defer file.Close()
@@ -99,7 +105,7 @@ func (h *FileHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	if dirStr := r.FormValue("dir_id"); dirStr != "" {
 		id, err := strconv.ParseInt(dirStr, 10, 64)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid dir_id")
+			writeError(w, http.StatusBadRequest, "无效的目录ID")
 			return
 		}
 		parentID = &id
@@ -111,11 +117,12 @@ func (h *FileHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrFileTooLarge):
-			writeError(w, http.StatusRequestEntityTooLarge, "file exceeds maximum size")
+			writeError(w, http.StatusRequestEntityTooLarge, "文件超过最大上传限制")
 		case errors.Is(err, service.ErrExtensionBlocked):
-			writeError(w, http.StatusUnprocessableEntity, "file extension not allowed")
+			writeError(w, http.StatusUnprocessableEntity, "不支持的文件类型")
 		default:
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			logging.Logger().Error("upload file failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		}
 		return
 	}
@@ -127,29 +134,31 @@ func (h *FileHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		"mime_type": result.File.MimeType,
 		"duplicate": result.Duplicate,
 	})
+	h.svc.RecordAudit(userID, "upload", "file", result.File.ID, result.File.Name, middleware.ClientIP(r))
 }
 
 func (h *FileHandler) Download(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromContext(r)
 	if userID == 0 {
-		writeError(w, http.StatusUnauthorized, "unauthorized")
+		writeError(w, http.StatusUnauthorized, "未授权")
 		return
 	}
 
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid file id")
+		writeError(w, http.StatusBadRequest, "无效的文件ID")
 		return
 	}
 
 	f, reader, err := h.svc.OpenFile(id, userID)
 	if err != nil {
 		if errors.Is(err, service.ErrFileNotFound) {
-			writeError(w, http.StatusNotFound, "file not found")
+			writeError(w, http.StatusNotFound, "文件不存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal server error")
+		logging.Logger().Error("download file failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
 	defer reader.Close()
@@ -160,29 +169,31 @@ func (h *FileHandler) Download(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Length", strconv.FormatInt(f.Size, 10))
 	w.WriteHeader(http.StatusOK)
 	io.Copy(w, reader)
+	h.svc.RecordAudit(userID, "download", "file", id, f.Name, middleware.ClientIP(r))
 }
 
 func (h *FileHandler) Thumbnail(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromContext(r)
 	if userID == 0 {
-		writeError(w, http.StatusUnauthorized, "unauthorized")
+		writeError(w, http.StatusUnauthorized, "未授权")
 		return
 	}
 
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid file id")
+		writeError(w, http.StatusBadRequest, "无效的文件ID")
 		return
 	}
 
 	_, reader, err := h.svc.OpenThumbnail(id, userID)
 	if err != nil {
 		if errors.Is(err, service.ErrFileNotFound) {
-			writeError(w, http.StatusNotFound, "thumbnail not found")
+			writeError(w, http.StatusNotFound, "缩略图不存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal server error")
+		logging.Logger().Error("thumbnail failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
 	defer reader.Close()
@@ -195,7 +206,7 @@ func (h *FileHandler) Thumbnail(w http.ResponseWriter, r *http.Request) {
 func (h *FileHandler) Mkdir(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromContext(r)
 	if userID == 0 {
-		writeError(w, http.StatusUnauthorized, "unauthorized")
+		writeError(w, http.StatusUnauthorized, "未授权")
 		return
 	}
 
@@ -205,17 +216,18 @@ func (h *FileHandler) Mkdir(w http.ResponseWriter, r *http.Request) {
 		ParentID *int64 `json:"parent_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		writeError(w, http.StatusBadRequest, "请求格式无效")
 		return
 	}
 
 	dir, err := h.svc.CreateDir(body.Name, body.ParentID, userID)
 	if err != nil {
 		if errors.Is(err, service.ErrNameConflict) {
-			writeError(w, http.StatusConflict, "name already exists")
+			writeError(w, http.StatusConflict, "名称已存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal server error")
+		logging.Logger().Error("mkdir failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
 
@@ -230,74 +242,578 @@ func (h *FileHandler) Mkdir(w http.ResponseWriter, r *http.Request) {
 func (h *FileHandler) Rename(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromContext(r)
 	if userID == 0 {
-		writeError(w, http.StatusUnauthorized, "unauthorized")
+		writeError(w, http.StatusUnauthorized, "未授权")
 		return
 	}
 
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid file id")
+		writeError(w, http.StatusBadRequest, "无效的文件ID")
 		return
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var body struct {
-		Name string `json:"name"`
+		Name     string `json:"name"`
+		ParentID *int64 `json:"parent_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		writeError(w, http.StatusBadRequest, "请求格式无效")
 		return
 	}
 
-	file, err := h.svc.RenameFile(id, body.Name, userID)
+	var file *model.File
+	if body.ParentID != nil {
+		file, err = h.svc.MoveFile(id, body.ParentID, userID)
+	} else if body.Name != "" {
+		file, err = h.svc.RenameFile(id, body.Name, userID)
+	} else {
+		writeError(w, http.StatusBadRequest, "缺少名称或父目录ID")
+		return
+	}
 	if err != nil {
 		if errors.Is(err, service.ErrFileNotFound) {
-			writeError(w, http.StatusNotFound, "file not found")
+			writeError(w, http.StatusNotFound, "文件不存在")
 			return
 		}
 		if errors.Is(err, service.ErrNameConflict) {
-			writeError(w, http.StatusConflict, "name already exists")
+			writeError(w, http.StatusConflict, "名称已存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal server error")
+		logging.Logger().Error("rename/move file failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"id":   file.ID,
-		"name": file.Name,
+		"id":        file.ID,
+		"name":      file.Name,
+		"parent_id": file.ParentID,
 	})
 }
 
 func (h *FileHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromContext(r)
 	if userID == 0 {
-		writeError(w, http.StatusUnauthorized, "unauthorized")
+		writeError(w, http.StatusUnauthorized, "未授权")
 		return
 	}
 
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid file id")
+		writeError(w, http.StatusBadRequest, "无效的文件ID")
 		return
 	}
 
 	if err := h.svc.DeleteFile(id, userID); err != nil {
 		if errors.Is(err, service.ErrFileNotFound) {
-			writeError(w, http.StatusNotFound, "file not found")
+			writeError(w, http.StatusNotFound, "文件不存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal server error")
+		logging.Logger().Error("delete file failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"message": "deleted"})
+	writeJSON(w, http.StatusOK, map[string]string{"message": "已删除"})
+	h.svc.RecordAudit(userID, "delete", "file", id, "", middleware.ClientIP(r))
+}
+
+func (h *FileHandler) RecycleList(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r)
+	if userID == 0 {
+		writeError(w, http.StatusUnauthorized, "未授权")
+		return
+	}
+	files, err := h.svc.FilesInRecycleBin(userID)
+	if err != nil {
+		logging.Logger().Error("recycle list failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	type entry struct {
+		ID        int64  `json:"id"`
+		Name      string `json:"name"`
+		IsDir     bool   `json:"is_dir"`
+		Size      int64  `json:"size"`
+		DeletedAt string `json:"deleted_at"`
+	}
+	entries := make([]entry, 0, len(files))
+	for _, f := range files {
+		ds := ""
+		if f.DeletedAt != nil {
+			ds = f.DeletedAt.Format("2006-01-02T15:04:05Z")
+		}
+		entries = append(entries, entry{ID: f.ID, Name: f.Name, IsDir: f.IsDir, Size: f.Size, DeletedAt: ds})
+	}
+	if entries == nil {
+		entries = []entry{}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"files": entries})
+}
+
+func (h *FileHandler) Restore(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r)
+	if userID == 0 {
+		writeError(w, http.StatusUnauthorized, "未授权")
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "无效的文件ID")
+		return
+	}
+	file, err := h.svc.RestoreFile(id, userID)
+	if err != nil {
+		if errors.Is(err, service.ErrFileNotFound) {
+			writeError(w, http.StatusNotFound, "文件不存在")
+			return
+		}
+		logging.Logger().Error("restore file failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"id": file.ID, "name": file.Name, "restored": true})
+}
+
+func (h *FileHandler) PermanentDelete(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r)
+	if userID == 0 {
+		writeError(w, http.StatusUnauthorized, "未授权")
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "无效的文件ID")
+		return
+	}
+	if err := h.svc.PermanentDeleteFile(id, userID); err != nil {
+		if errors.Is(err, service.ErrFileNotFound) {
+			writeError(w, http.StatusNotFound, "文件不存在")
+			return
+		}
+		logging.Logger().Error("permanent delete failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "已永久删除"})
+	h.svc.RecordAudit(userID, "permanent_delete", "file", id, "", middleware.ClientIP(r))
+}
+
+func (h *FileHandler) PermanentDeletePreview(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r)
+	if userID == 0 {
+		writeError(w, http.StatusUnauthorized, "未授权")
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "无效的文件ID")
+		return
+	}
+	fileCount, dirCount, err := h.svc.DescendantCounts(id, userID)
+	if err != nil {
+		if errors.Is(err, service.ErrFileNotFound) {
+			writeError(w, http.StatusNotFound, "文件不存在")
+			return
+		}
+		logging.Logger().Error("permanent delete preview failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"file_count": fileCount,
+		"dir_count":  dirCount,
+	})
+}
+
+func (h *FileHandler) Copy(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r)
+	if userID == 0 {
+		writeError(w, http.StatusUnauthorized, "未授权")
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "无效的文件ID")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body struct {
+		ParentID *int64 `json:"parent_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式无效")
+		return
+	}
+	file, err := h.svc.CopyFile(id, body.ParentID, userID)
+	if err != nil {
+		if errors.Is(err, service.ErrFileNotFound) {
+			writeError(w, http.StatusNotFound, "文件不存在")
+			return
+		}
+		if errors.Is(err, service.ErrNameConflict) {
+			writeError(w, http.StatusConflict, "名称已存在")
+			return
+		}
+		logging.Logger().Error("copy file failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]interface{}{"id": file.ID, "name": file.Name, "parent_id": file.ParentID})
+}
+
+func (h *FileHandler) ToggleStar(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r)
+	if userID == 0 {
+		writeError(w, http.StatusUnauthorized, "未授权")
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "无效的文件ID")
+		return
+	}
+	starred, err := h.svc.ToggleStar(id, userID)
+	if err != nil {
+		if errors.Is(err, service.ErrFileNotFound) {
+			writeError(w, http.StatusNotFound, "文件不存在")
+			return
+		}
+		logging.Logger().Error("toggle star failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"id": id, "is_starred": starred})
+}
+
+func (h *FileHandler) StarredList(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r)
+	if userID == 0 {
+		writeError(w, http.StatusUnauthorized, "未授权")
+		return
+	}
+	files, err := h.svc.StarredFiles(userID)
+	if err != nil {
+		logging.Logger().Error("starred list failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	type fileEntry struct {
+		ID           int64   `json:"id"`
+		Name         string  `json:"name"`
+		IsDir        bool    `json:"is_dir"`
+		Size         int64   `json:"size"`
+		MimeType     string  `json:"mime_type"`
+		ThumbnailKey string  `json:"thumbnail_key"`
+		ParentID     *int64  `json:"parent_id"`
+		CreatedAt    string  `json:"created_at"`
+	}
+	entries := make([]fileEntry, 0, len(files))
+	for _, f := range files {
+		entries = append(entries, fileEntry{
+			ID: f.ID, Name: f.Name, IsDir: f.IsDir,
+			Size: f.Size, MimeType: f.MimeType,
+			ThumbnailKey: f.ThumbnailKey, ParentID: f.ParentID,
+			CreatedAt: f.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		})
+	}
+	if entries == nil {
+		entries = []fileEntry{}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"files": entries})
+}
+
+func (h *FileHandler) BatchDelete(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r)
+	if userID == 0 {
+		writeError(w, http.StatusUnauthorized, "未授权")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body struct {
+		IDs []int64 `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式无效")
+		return
+	}
+	if err := h.svc.BatchDelete(body.IDs, userID); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "批量删除成功"})
+}
+
+func (h *FileHandler) BatchMove(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r)
+	if userID == 0 {
+		writeError(w, http.StatusUnauthorized, "未授权")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body struct {
+		IDs      []int64 `json:"ids"`
+		ParentID *int64  `json:"parent_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式无效")
+		return
+	}
+	if err := h.svc.BatchMove(body.IDs, body.ParentID, userID); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "批量移动成功"})
+}
+
+func (h *FileHandler) DownloadZip(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r)
+	if userID == 0 {
+		writeError(w, http.StatusUnauthorized, "未授权")
+		return
+	}
+	idsStr := r.URL.Query().Get("ids")
+	if idsStr == "" {
+		writeError(w, http.StatusBadRequest, "缺少ids参数")
+		return
+	}
+	var ids []int64
+	for _, s := range strings.Split(idsStr, ",") {
+		id, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "ids中包含无效ID")
+			return
+		}
+		ids = append(ids, id)
+	}
+	if err := h.svc.ValidateZipDownload(ids, userID); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", "attachment; filename=\"download.zip\"")
+	w.WriteHeader(http.StatusOK)
+	if err := h.svc.DownloadZip(ids, userID, w); err != nil {
+		logHTTPError(w, r, err)
+	}
+}
+
+func (h *FileHandler) InitUpload(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r)
+	if userID == 0 {
+		writeError(w, http.StatusUnauthorized, "未授权")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body struct {
+		Name      string `json:"name"`
+		ParentID  *int64 `json:"parent_id"`
+		TotalSize int64  `json:"total_size"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式无效")
+		return
+	}
+	result, err := h.svc.InitUpload(userID, body.ParentID, body.Name, body.TotalSize)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrFileTooLarge):
+			writeError(w, http.StatusRequestEntityTooLarge, "文件超过最大上传限制")
+		case errors.Is(err, service.ErrExtensionBlocked):
+			writeError(w, http.StatusUnprocessableEntity, "不支持的文件类型")
+		default:
+			logging.Logger().Error("init upload failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "服务器内部错误")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *FileHandler) UploadChunk(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r)
+	if userID == 0 {
+		writeError(w, http.StatusUnauthorized, "未授权")
+		return
+	}
+	uploadID := r.FormValue("upload_id")
+	indexStr := r.FormValue("index")
+	if uploadID == "" || indexStr == "" {
+		writeError(w, http.StatusBadRequest, "缺少upload_id或index参数")
+		return
+	}
+	index, err := strconv.Atoi(indexStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "无效的分片索引")
+		return
+	}
+	file, _, err := r.FormFile("chunk")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "请选择分片文件")
+		return
+	}
+	defer file.Close()
+	if err := h.svc.UploadChunk(uploadID, index, file, userID); err != nil {
+		logging.Logger().Error("upload chunk failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"index": index, "ok": true})
+}
+
+func (h *FileHandler) CompleteUpload(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r)
+	if userID == 0 {
+		writeError(w, http.StatusUnauthorized, "未授权")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body struct {
+		UploadID string `json:"upload_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式无效")
+		return
+	}
+	result, err := h.svc.CompleteUpload(body.UploadID, userID)
+	if err != nil {
+		logging.Logger().Error("complete upload failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]interface{}{
+		"id":        result.File.ID,
+		"name":      result.File.Name,
+		"size":      result.File.Size,
+		"mime_type": result.File.MimeType,
+		"duplicate": result.Duplicate,
+	})
+		h.svc.RecordAudit(userID, "upload", "file", result.File.ID, result.File.Name, middleware.ClientIP(r))
+}
+
+func (h *FileHandler) UploadStatus(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r)
+	if userID == 0 {
+		writeError(w, http.StatusUnauthorized, "未授权")
+		return
+	}
+	uploadID := r.PathValue("uploadId")
+	if uploadID == "" {
+		writeError(w, http.StatusBadRequest, "缺少上传ID")
+		return
+	}
+	session, completed, err := h.svc.UploadStatus(uploadID, userID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "上传会话不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"upload_id":   session.UploadID,
+		"name":        session.Name,
+		"total_size":  session.TotalSize,
+		"chunk_size":  session.ChunkSize,
+		"chunk_count": session.ChunkCount,
+		"completed":   completed,
+	})
+}
+
+func (h *FileHandler) Preview(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r)
+	if userID == 0 {
+		writeError(w, http.StatusUnauthorized, "未授权")
+		return
+	}
+
+	idStr := r.PathValue("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "无效的文件ID")
+		return
+	}
+
+	f, previewType, content, err := h.svc.PreviewContent(id, userID)
+	if err != nil {
+		if errors.Is(err, service.ErrFileNotFound) {
+			writeError(w, http.StatusNotFound, "文件不存在")
+			return
+		}
+		logging.Logger().Error("preview failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+
+	if previewType == "image" || previewType == "video" || previewType == "audio" || previewType == "pdf" {
+		_, reader, err := h.svc.OpenPreviewFile(id, userID)
+		if err != nil {
+			logging.Logger().Error("preview open file failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		defer reader.Close()
+		mimeType := f.MimeType
+		if mimeType == "" {
+			mimeType = "application/octet-stream"
+		}
+		w.Header().Set("Content-Type", mimeType)
+		w.Header().Set("Content-Length", strconv.FormatInt(f.Size, 10))
+		w.Header().Set("Content-Disposition", "inline")
+		w.WriteHeader(http.StatusOK)
+		io.Copy(w, reader)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"id":           f.ID,
+		"name":         f.Name,
+		"mime_type":    f.MimeType,
+		"preview_type": previewType,
+		"content":      content,
+	})
+}
+
+func (h *FileHandler) TempLink(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r)
+	if userID == 0 {
+		writeError(w, http.StatusUnauthorized, "未授权")
+		return
+	}
+
+	idStr := r.PathValue("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "无效的文件ID")
+		return
+	}
+
+	td, err := h.svc.CreateTempLink(id, userID)
+	if err != nil {
+		if errors.Is(err, service.ErrFileNotFound) {
+			writeError(w, http.StatusNotFound, "文件不存在")
+			return
+		}
+		logging.Logger().Error("temp link failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]interface{}{
+		"token":     td.Token,
+		"file_id":   td.FileID,
+		"expire_at": td.ExpireAt.Format("2006-01-02T15:04:05Z"),
+	})
+}
+
+func logHTTPError(w http.ResponseWriter, r *http.Request, err error) {
+	logging.Logger().Error("handler error", "method", r.Method, "path", r.URL.Path, "error", err)
 }
 
 func userIDFromContext(r *http.Request) int64 {
-	userIDStr, _ := r.Context().Value(middleware.UserIDKey).(string)
-	userID, _ := strconv.ParseInt(userIDStr, 10, 64)
+	userID, ok := r.Context().Value(middleware.UserIDKey).(int64)
+	if !ok {
+		return 0
+	}
 	return userID
 }

@@ -1,0 +1,1 @@
+ALTER TABLE files ADD COLUMN is_starred TINYINT(1) NOT NULL DEFAULT 0 AFTER mime_type;

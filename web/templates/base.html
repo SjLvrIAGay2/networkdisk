@@ -210,6 +210,97 @@
             const match = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]*)/);
             return match ? match[1] : '';
         }
+
+        var refreshPromise = null;
+
+        function apiFetch(url, options) {
+            var token = localStorage.getItem('access_token');
+            options = options || {};
+            options.headers = options.headers || {};
+            if (token) {
+                options.headers['Authorization'] = 'Bearer ' + token;
+            }
+            options.credentials = 'same-origin';
+            return fetch(url, options).then(function(r) {
+                if (r.status === 401 && token) {
+                    if (!refreshPromise) {
+                        refreshPromise = fetch('/api/auth/refresh', {
+                            method: 'POST',
+                            credentials: 'same-origin',
+                            headers: { 'X-CSRF-Token': getCSRFToken() }
+                        }).then(function(refreshR) {
+                            if (!refreshR.ok) {
+                                localStorage.removeItem('access_token');
+                                window.location.replace('/login');
+                                throw new Error('session expired');
+                            }
+                            return refreshR.json();
+                        }).then(function(data) {
+                            localStorage.setItem('access_token', data.access_token);
+                            if (data.csrf_token) {
+                                document.cookie = 'csrf_token=' + data.csrf_token + ';path=/;SameSite=Strict;' + (location.protocol === 'https:' ? 'Secure;' : '') + 'max-age=86400';
+                            }
+                            return data;
+                        }).finally(function() {
+                            refreshPromise = null;
+                        });
+                    }
+                    return refreshPromise.then(function(data) {
+                        options.headers['Authorization'] = 'Bearer ' + data.access_token;
+                        return fetch(url, options);
+                    });
+                }
+                return r;
+            });
+        }
+
+        function handleLogout() {
+            var token = localStorage.getItem('access_token');
+            fetch('/api/auth/logout', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'Authorization': 'Bearer ' + (token || ''),
+                    'X-CSRF-Token': getCSRFToken()
+                }
+            }).finally(function() {
+                localStorage.removeItem('access_token');
+                window.location.replace('/login');
+            });
+        }
+
+        function formatSize(bytes) {
+            if (bytes === 0) return '-';
+            var units = ['B', 'KB', 'MB', 'GB'];
+            var i = 0;
+            var size = bytes;
+            while (size >= 1024 && i < units.length - 1) { size /= 1024; i++; }
+            return size.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+        }
+
+        function escapeHtml(str) {
+            var div = document.createElement('div');
+            div.appendChild(document.createTextNode(str));
+            return div.innerHTML;
+        }
+
+        function downloadFile(id, name) {
+            apiFetch('/api/files/download/' + id, {}).then(function(r) {
+                if (!r.ok) throw new Error('download failed');
+                return r.blob();
+            }).then(function(blob) {
+                var url = window.URL.createObjectURL(blob);
+                var a = document.createElement('a');
+                a.href = url;
+                a.download = name;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                window.URL.revokeObjectURL(url);
+            }).catch(function() {
+                alert('下载失败');
+            });
+        }
     </script>
     {{block "scripts" .}}{{end}}
 </body>

@@ -12,15 +12,15 @@ import (
 	"networkdisk/internal/model"
 )
 
-var ErrUsernameTaken = fmt.Errorf("username already taken")
+var ErrUsernameTaken = fmt.Errorf("用户名已被占用")
 
 func (s *Store) CreateUser(username, passwordHash string) (*model.User, error) {
 	username = strings.TrimSpace(username)
 	if len(username) < 3 || len(username) > 64 {
-		return nil, fmt.Errorf("create user: username must be 3-64 characters")
+		return nil, fmt.Errorf("创建用户：用户名长度必须在3-64个字符之间")
 	}
 	if passwordHash == "" {
-		return nil, fmt.Errorf("create user: password hash must not be empty")
+		return nil, fmt.Errorf("创建用户：密码哈希不能为空")
 	}
 	result, err := s.DB.ExecContext(context.Background(),
 		"INSERT INTO users (username, password_hash) VALUES (?, ?)",
@@ -41,7 +41,7 @@ func (s *Store) CreateUser(username, passwordHash string) (*model.User, error) {
 
 func (s *Store) UserByUsername(username string) (*model.User, error) {
 	if strings.TrimSpace(username) == "" {
-		return nil, fmt.Errorf("user by username: username must not be empty")
+		return nil, fmt.Errorf("通过用户名查找用户：用户名不能为空")
 	}
 	user := &model.User{}
 	err := s.DB.QueryRowContext(context.Background(),
@@ -56,7 +56,7 @@ func (s *Store) UserByUsername(username string) (*model.User, error) {
 
 func (s *Store) UserByID(id int64) (*model.User, error) {
 	if id <= 0 {
-		return nil, fmt.Errorf("user by id: id must be positive, got %d", id)
+		return nil, fmt.Errorf("通过ID查找用户：ID必须为正数，当前值为%d", id)
 	}
 	user := &model.User{}
 	err := s.DB.QueryRowContext(context.Background(),
@@ -71,10 +71,10 @@ func (s *Store) UserByID(id int64) (*model.User, error) {
 
 func (s *Store) UpdateUserPassword(id int64, passwordHash string) error {
 	if id <= 0 {
-		return fmt.Errorf("update user password: id must be positive, got %d", id)
+		return fmt.Errorf("更新用户密码：ID必须为正数，当前值为%d", id)
 	}
 	if passwordHash == "" {
-		return fmt.Errorf("update user password: password hash must not be empty")
+		return fmt.Errorf("更新用户密码：密码哈希不能为空")
 	}
 	_, err := s.DB.ExecContext(context.Background(), "UPDATE users SET password_hash = ? WHERE id = ?", passwordHash, id)
 	if err != nil {
@@ -97,10 +97,10 @@ type Tx struct {
 
 func (tx *Tx) CreateRefreshToken(userID int64, tokenHash, familyID string, expiresAt time.Time) (*model.RefreshToken, error) {
 	if userID <= 0 {
-		return nil, fmt.Errorf("create refresh token: user id must be positive")
+		return nil, fmt.Errorf("创建刷新令牌：用户ID必须为正数")
 	}
 	if tokenHash == "" || familyID == "" {
-		return nil, fmt.Errorf("create refresh token: token hash and family id required")
+		return nil, fmt.Errorf("创建刷新令牌：需要令牌哈希和家族ID")
 	}
 	result, err := tx.Tx.ExecContext(context.Background(),
 		"INSERT INTO refresh_tokens (user_id, token_hash, family_id, expires_at) VALUES (?, ?, ?, ?)",
@@ -126,7 +126,7 @@ func (tx *Tx) CreateRefreshToken(userID int64, tokenHash, familyID string, expir
 
 func (tx *Tx) RevokeRefreshToken(id int64) error {
 	if id <= 0 {
-		return fmt.Errorf("revoke refresh token: id must be positive")
+		return fmt.Errorf("吊销刷新令牌：ID必须为正数")
 	}
 	result, err := tx.Tx.ExecContext(context.Background(),
 		"UPDATE refresh_tokens SET revoked = 1 WHERE id = ? AND revoked = 0", id,
@@ -139,7 +139,7 @@ func (tx *Tx) RevokeRefreshToken(id int64) error {
 		return fmt.Errorf("revoke refresh token rows affected: %w", err)
 	}
 	if affected == 0 {
-		return fmt.Errorf("revoke refresh token: token already revoked or not found")
+		return fmt.Errorf("吊销刷新令牌：令牌已被吊销或不存在")
 	}
 	return nil
 }
@@ -160,10 +160,10 @@ func (tx *Tx) Rollback() error {
 
 func (s *Store) CreateRefreshToken(userID int64, tokenHash, familyID string, expiresAt time.Time) (*model.RefreshToken, error) {
 	if userID <= 0 {
-		return nil, fmt.Errorf("create refresh token: user id must be positive")
+		return nil, fmt.Errorf("创建刷新令牌：用户ID必须为正数")
 	}
 	if tokenHash == "" || familyID == "" {
-		return nil, fmt.Errorf("create refresh token: token hash and family id required")
+		return nil, fmt.Errorf("创建刷新令牌：需要令牌哈希和家族ID")
 	}
 	result, err := s.DB.ExecContext(context.Background(),
 		"INSERT INTO refresh_tokens (user_id, token_hash, family_id, expires_at) VALUES (?, ?, ?, ?)",
@@ -181,11 +181,11 @@ func (s *Store) CreateRefreshToken(userID int64, tokenHash, familyID string, exp
 
 func (s *Store) RefreshTokenByHash(tokenHash string) (*model.RefreshToken, error) {
 	if tokenHash == "" {
-		return nil, fmt.Errorf("refresh token by hash: token hash must not be empty")
+		return nil, fmt.Errorf("通过哈希查找刷新令牌：令牌哈希不能为空")
 	}
 	rt := &model.RefreshToken{}
 	err := s.DB.QueryRowContext(context.Background(),
-		"SELECT id, user_id, token_hash, family_id, revoked, expires_at, created_at FROM refresh_tokens WHERE token_hash = ? AND revoked = 0 AND expires_at > NOW()",
+		"SELECT id, user_id, token_hash, family_id, revoked, expires_at, created_at FROM refresh_tokens WHERE token_hash = ?",
 		tokenHash,
 	).Scan(&rt.ID, &rt.UserID, &rt.TokenHash, &rt.FamilyID, &rt.Revoked, &rt.ExpiresAt, &rt.CreatedAt)
 	if err != nil {
@@ -196,7 +196,7 @@ func (s *Store) RefreshTokenByHash(tokenHash string) (*model.RefreshToken, error
 
 func (s *Store) RefreshTokenByID(id int64) (*model.RefreshToken, error) {
 	if id <= 0 {
-		return nil, fmt.Errorf("refresh token by id: id must be positive")
+		return nil, fmt.Errorf("通过ID查找刷新令牌：ID必须为正数")
 	}
 	rt := &model.RefreshToken{}
 	err := s.DB.QueryRowContext(context.Background(),
@@ -211,7 +211,7 @@ func (s *Store) RefreshTokenByID(id int64) (*model.RefreshToken, error) {
 
 func (s *Store) RevokeRefreshToken(id int64) error {
 	if id <= 0 {
-		return fmt.Errorf("revoke refresh token: id must be positive")
+		return fmt.Errorf("吊销刷新令牌：ID必须为正数")
 	}
 	result, err := s.DB.ExecContext(context.Background(),
 		"UPDATE refresh_tokens SET revoked = 1 WHERE id = ? AND revoked = 0", id,
@@ -224,14 +224,14 @@ func (s *Store) RevokeRefreshToken(id int64) error {
 		return fmt.Errorf("revoke refresh token rows affected: %w", err)
 	}
 	if affected == 0 {
-		return fmt.Errorf("revoke refresh token: token already revoked or not found")
+		return fmt.Errorf("吊销刷新令牌：令牌已被吊销或不存在")
 	}
 	return nil
 }
 
 func (s *Store) RevokeTokenFamily(familyID string) error {
 	if familyID == "" {
-		return fmt.Errorf("revoke token family: family id must not be empty")
+		return fmt.Errorf("吊销令牌家族：家族ID不能为空")
 	}
 	_, err := s.DB.ExecContext(context.Background(), "UPDATE refresh_tokens SET revoked = 1 WHERE family_id = ?", familyID)
 	if err != nil {
@@ -250,7 +250,7 @@ func (s *Store) DeleteExpiredRefreshTokens() (int64, error) {
 
 func (s *Store) UserExists(username string) (bool, error) {
 	if strings.TrimSpace(username) == "" {
-		return false, fmt.Errorf("user exists: username must not be empty")
+		return false, fmt.Errorf("检查用户是否存在：用户名不能为空")
 	}
 	var exists bool
 	err := s.DB.QueryRowContext(context.Background(), "SELECT EXISTS(SELECT 1 FROM users WHERE username = ?)", username).Scan(&exists)
@@ -258,6 +258,18 @@ func (s *Store) UserExists(username string) (bool, error) {
 		return false, fmt.Errorf("user exists: %w", err)
 	}
 	return exists, nil
+}
+
+func (tx *Tx) UpdateUserStorageUsed(userID int64, delta int64) error {
+	userID, err := mustBePositive(userID)
+	if err != nil {
+		return fmt.Errorf("update storage used tx: %w", err)
+	}
+	_, err = tx.Tx.ExecContext(context.Background(), "UPDATE users SET storage_used = GREATEST(storage_used + ?, 0) WHERE id = ?", delta, userID)
+	if err != nil {
+		return fmt.Errorf("update storage used tx: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) UpdateUserStorageUsed(userID int64, delta int64) error {
@@ -270,4 +282,24 @@ func (s *Store) UpdateUserStorageUsed(userID int64, delta int64) error {
 		return fmt.Errorf("update storage used: %w", err)
 	}
 	return nil
+}
+
+func (s *Store) AllUserIDs() ([]int64, error) {
+	rows, err := s.DB.QueryContext(context.Background(), "SELECT id FROM users")
+	if err != nil {
+		return nil, fmt.Errorf("all user ids: %w", err)
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("all user ids scan: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("all user ids iterate: %w", err)
+	}
+	return ids, nil
 }

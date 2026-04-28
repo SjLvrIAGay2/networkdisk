@@ -1,0 +1,191 @@
+{{template "base.html" .}}
+{{define "title"}}我的分享 - NetworkDisk{{end}}
+{{define "nav-right"}}
+<span id="navUsername" style="font-size:14px;color:var(--text-secondary);"></span>
+<button onclick="handleLogout()" style="font-size:14px;color:var(--text);text-decoration:none;background:none;border:none;cursor:pointer;padding:6px 12px;border-radius:6px;">退出</button>
+<button id="themeToggle" class="theme-toggle" onclick="toggleTheme()">🌙</button>
+{{end}}
+{{define "sidebar"}}
+<a href="/">文件</a>
+<a href="/recycle">回收站</a>
+<a href="/shares">我的分享</a>
+{{end}}
+{{define "content"}}
+<div>
+    <div class="toolbar" style="margin-bottom:16px;display:flex;align-items:center;gap:12px;">
+        <button class="btn" style="background:var(--surface);border:1px solid var(--border);" onclick="refreshShares()">刷新</button>
+    </div>
+    <div class="card" style="padding:0;">
+        <table style="width:100%;border-collapse:collapse;">
+            <thead>
+                <tr style="border-bottom:1px solid var(--border);">
+                    <th style="padding:10px 16px;text-align:left;font-size:13px;font-weight:500;color:var(--text-secondary);">文件名</th>
+                    <th style="padding:10px 16px;text-align:center;font-size:13px;font-weight:500;color:var(--text-secondary);">密码保护</th>
+                    <th style="padding:10px 16px;text-align:right;font-size:13px;font-weight:500;color:var(--text-secondary);">浏览次数</th>
+                    <th style="padding:10px 16px;text-align:right;font-size:13px;font-weight:500;color:var(--text-secondary);">有效期</th>
+                    <th style="padding:10px 16px;text-align:right;font-size:13px;font-weight:500;color:var(--text-secondary);">操作</th>
+                </tr>
+            </thead>
+            <tbody id="shareList">
+                <tr><td colspan="5" style="padding:32px;text-align:center;color:var(--text-secondary);">加载中...</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div id="createShareModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.4);z-index:200;align-items:center;justify-content:center;">
+    <div style="background:var(--surface);border-radius:8px;padding:24px;min-width:360px;">
+        <h3 style="margin-bottom:16px;">创建分享</h3>
+        <div class="form-group">
+            <label>密码 (可选)</label>
+            <input type="text" id="sharePassword" placeholder="留空则不设密码" style="max-width:100%;">
+        </div>
+        <div class="form-group">
+            <label>有效期</label>
+            <select id="shareExpire" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);">
+                <option value="0">永久</option>
+                <option value="1">1天</option>
+                <option value="7">7天</option>
+                <option value="30">30天</option>
+                <option value="90">90天</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>下载次数限制 (0=不限)</label>
+            <input type="number" id="shareMaxDownloads" value="0" min="0" style="max-width:100%;">
+        </div>
+        <div id="shareError" class="error-message" style="display:none;margin-bottom:8px;"></div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;">
+            <button class="btn" style="background:var(--border);" onclick="hideCreateShareModal()">取消</button>
+            <button class="btn btn-primary" onclick="doCreateShare()">创建</button>
+        </div>
+    </div>
+</div>
+{{end}}
+{{define "scripts"}}
+<script>
+var shareFileId = null;
+
+(function() {
+    var token = localStorage.getItem('access_token');
+    if (!token) {
+        window.location.replace('/login');
+        return;
+    }
+    apiFetch('/api/auth/me', {}).then(function(r) {
+        if (!r.ok) { localStorage.removeItem('access_token'); window.location.replace('/login'); return; }
+        return r.json();
+    }).then(function(data) {
+        if (data && data.username) {
+            document.getElementById('navUsername').textContent = data.username;
+        }
+    });
+    refreshShares();
+})();
+
+function refreshShares() {
+    apiFetch('/api/shares', {}).then(function(r) {
+        if (!r.ok) throw new Error('failed');
+        return r.json();
+    }).then(function(data) {
+        renderShares(data.shares);
+    }).catch(function() {
+        document.getElementById('shareList').innerHTML = '<tr><td colspan="5" style="padding:32px;text-align:center;color:var(--danger);">加载失败</td></tr>';
+    });
+}
+
+function renderShares(shares) {
+    var tbody = document.getElementById('shareList');
+    if (!shares || shares.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="padding:32px;text-align:center;color:var(--text-secondary);">暂无分享</td></tr>';
+        return;
+    }
+    var protocol = window.location.protocol;
+    var host = window.location.host;
+    var html = '';
+    for (var i = 0; i < shares.length; i++) {
+        var s = shares[i];
+        var link = protocol + '//' + host + '/s/' + s.token;
+        var expireStr = s.expire_at ? s.expire_at.substring(0, 10) : '永久';
+        html += '<tr style="border-bottom:1px solid var(--border);">';
+        html += '<td style="padding:10px 16px;"><a href="' + link + '" target="_blank" style="color:var(--text);text-decoration:none;">' + escapeHtml(s.file_name || '(文件已删除)') + '</a></td>';
+        html += '<td style="padding:10px 16px;text-align:center;font-size:13px;">' + (s.password_set ? '🔒 是' : '否') + '</td>';
+        html += '<td style="padding:10px 16px;text-align:right;font-size:13px;color:var(--text-secondary);">' + s.view_count + '</td>';
+        html += '<td style="padding:10px 16px;text-align:right;font-size:13px;color:var(--text-secondary);">' + expireStr + '</td>';
+        html += '<td style="padding:10px 16px;text-align:right;">';
+        html += '<button onclick="copyShareLink(\'' + s.token + '\')" style="font-size:12px;margin-right:4px;background:none;border:1px solid var(--border);border-radius:4px;padding:3px 8px;cursor:pointer;color:var(--text);">复制链接</button>';
+        html += '<button onclick="deleteShare(' + s.id + ')" style="font-size:12px;background:none;border:1px solid var(--danger);border-radius:4px;padding:3px 8px;cursor:pointer;color:var(--danger);">取消</button>';
+        html += '</td>';
+        html += '</tr>';
+    }
+    tbody.innerHTML = html;
+}
+
+function showCreateShareModal(fileId) {
+    shareFileId = fileId;
+    document.getElementById('createShareModal').style.display = 'flex';
+    document.getElementById('sharePassword').value = '';
+    document.getElementById('shareExpire').value = '0';
+    document.getElementById('shareMaxDownloads').value = '0';
+    document.getElementById('shareError').style.display = 'none';
+}
+
+function hideCreateShareModal() {
+    document.getElementById('createShareModal').style.display = 'none';
+    shareFileId = null;
+}
+
+function doCreateShare() {
+    if (!shareFileId) return;
+    var password = document.getElementById('sharePassword').value.trim();
+    var expireDays = parseInt(document.getElementById('shareExpire').value) || 0;
+    var maxDownloads = parseInt(document.getElementById('shareMaxDownloads').value) || 0;
+    var errEl = document.getElementById('shareError');
+    apiFetch('/api/shares', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': getCSRFToken()
+        },
+        body: JSON.stringify({
+            file_id: shareFileId,
+            password: password,
+            expire_days: expireDays,
+            max_downloads: maxDownloads
+        })
+    }).then(function(r) {
+        if (r.ok) {
+            hideCreateShareModal();
+            refreshShares();
+        } else {
+            return r.json().then(function(d) { throw new Error(d.error || '创建失败'); });
+        }
+    }).catch(function(e) {
+        errEl.textContent = e.message || '创建失败';
+        errEl.style.display = 'block';
+    });
+}
+
+function copyShareLink(token) {
+    var link = window.location.protocol + '//' + window.location.host + '/s/' + token;
+    if (navigator.clipboard) {
+        navigator.clipboard.writeText(link).then(function() {
+            alert('链接已复制到剪贴板');
+        });
+    } else {
+        prompt('复制此链接:', link);
+    }
+}
+
+function deleteShare(id) {
+    if (!confirm('确认取消此分享？')) return;
+    apiFetch('/api/shares/' + id, {
+        method: 'DELETE',
+        headers: { 'X-CSRF-Token': getCSRFToken() }
+    }).then(function(r) {
+        if (r.ok) { refreshShares(); }
+        else { r.json().then(function(d) { alert(d.error || '取消失败'); }); }
+    }).catch(function() { alert('取消失败'); });
+}
+</script>
+{{end}}

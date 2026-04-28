@@ -23,14 +23,18 @@ type UserService struct {
 }
 
 var (
-	ErrUsernameTaken      = errors.New("username already taken")
-	ErrInvalidCredentials = errors.New("invalid username or password")
-	ErrTokenRevoked       = errors.New("refresh token revoked")
-	ErrTokenExpired       = errors.New("refresh token expired")
+	ErrUsernameTaken      = errors.New("用户名已被占用")
+	ErrInvalidCredentials = errors.New("用户名或密码错误")
+	ErrTokenRevoked       = errors.New("刷新令牌已吊销")
+	ErrTokenExpired       = errors.New("刷新令牌已过期")
 )
 
 func NewUserService(s *store.Store, cfg *config.Config) *UserService {
 	return &UserService{store: s, config: cfg}
+}
+
+func (svc *UserService) UpdateConfig(cfg *config.Config) {
+	svc.config = cfg
 }
 
 type RegisterInput struct {
@@ -41,10 +45,10 @@ type RegisterInput struct {
 func (svc *UserService) Register(in RegisterInput) (*model.User, error) {
 	in.Username = strings.TrimSpace(in.Username)
 	if len(in.Username) < 3 || len(in.Username) > 64 {
-		return nil, fmt.Errorf("username must be 3-64 characters")
+		return nil, fmt.Errorf("用户名长度必须在3-64个字符之间")
 	}
 	if len(in.Password) < 6 {
-		return nil, fmt.Errorf("password must be at least 6 characters")
+		return nil, fmt.Errorf("密码长度不能少于6个字符")
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), svc.config.Auth.BcryptCost)
 	if err != nil {
@@ -95,7 +99,9 @@ func (svc *UserService) RefreshAccessToken(refreshToken string) (*model.User, *T
 		return nil, nil, ErrInvalidCredentials
 	}
 	if rt.Revoked {
-		svc.store.RevokeTokenFamily(rt.FamilyID)
+		if err := svc.store.RevokeTokenFamily(rt.FamilyID); err != nil {
+			return nil, nil, fmt.Errorf("revoke token family: %w", err)
+		}
 		return nil, nil, ErrTokenRevoked
 	}
 	if time.Now().After(rt.ExpiresAt) {
@@ -154,12 +160,15 @@ func (svc *UserService) Logout(refreshToken string) error {
 	if err != nil {
 		return nil
 	}
-	return svc.store.RevokeRefreshToken(rt.ID)
+	if err := svc.store.RevokeRefreshToken(rt.ID); err != nil {
+		return fmt.Errorf("logout revoke: %w", err)
+	}
+	return nil
 }
 
 func (svc *UserService) ChangePassword(userID int64, oldPassword, newPassword string) error {
 	if len(newPassword) < 6 {
-		return fmt.Errorf("password must be at least 6 characters")
+		return fmt.Errorf("密码长度不能少于6个字符")
 	}
 	user, err := svc.store.UserByID(userID)
 	if err != nil {

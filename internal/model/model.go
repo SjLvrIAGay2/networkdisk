@@ -49,3 +49,25 @@ type AuditLog struct {
 	IP         string    `json:"ip"`
 	CreatedAt  time.Time `json:"created_at"`
 }
+
+type Share struct {
+	ID           int64      `json:"id"`
+	Token        string     `json:"token"`
+	FileID       int64      `json:"file_id"`
+	OwnerID      int64      `json:"owner_id"`
+	PasswordHash string     `json:"-"`
+	ExpireAt     *time.Time `json:"expire_at,omitempty"`
+	MaxDownloads int64      `json:"max_downloads"`
+	ViewCount    int64      `json:"view_count"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+}
+
+type TempDownload struct {
+	ID        int64     `json:"id"`
+	Token     string    `json:"token"`
+	FileID    int64     `json:"file_id"`
+	UserID    int64     `json:"user_id"`
+	ExpireAt  time.Time `json:"expire_at"`
+	CreatedAt time.Time `json:"created_at"`
+}

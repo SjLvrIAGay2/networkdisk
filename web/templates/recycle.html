@@ -1,0 +1,130 @@
+{{template "base.html" .}}
+{{define "title"}}回收站 - NetworkDisk{{end}}
+{{define "nav-right"}}
+<span id="navUsername" style="font-size:14px;color:var(--text-secondary);"></span>
+<button onclick="handleLogout()" style="font-size:14px;color:var(--text);text-decoration:none;background:none;border:none;cursor:pointer;padding:6px 12px;border-radius:6px;">退出</button>
+<button id="themeToggle" class="theme-toggle" onclick="toggleTheme()">🌙</button>
+{{end}}
+{{define "sidebar"}}
+<a href="/">文件</a>
+<a href="/recycle">回收站</a>
+<a href="/shares">共享</a>
+{{end}}
+{{define "content"}}
+<div>
+    <div class="toolbar" style="margin-bottom:16px;display:flex;align-items:center;gap:12px;">
+        <a href="/" class="btn" style="background:var(--surface);border:1px solid var(--border);text-decoration:none;color:var(--text);padding:8px 20px;border-radius:6px;font-size:14px;">返回文件</a>
+        <button class="btn" style="background:var(--surface);border:1px solid var(--border);" onclick="refreshRecycle()">刷新</button>
+    </div>
+    <div class="card" style="padding:0;">
+        <table style="width:100%;border-collapse:collapse;">
+            <thead>
+                <tr style="border-bottom:1px solid var(--border);">
+                    <th style="padding:10px 16px;text-align:left;font-size:13px;font-weight:500;color:var(--text-secondary);">名称</th>
+                    <th style="padding:10px 16px;text-align:right;font-size:13px;font-weight:500;color:var(--text-secondary);">大小</th>
+                    <th style="padding:10px 16px;text-align:right;font-size:13px;font-weight:500;color:var(--text-secondary);">删除时间</th>
+                    <th style="padding:10px 16px;text-align:right;font-size:13px;font-weight:500;color:var(--text-secondary);">操作</th>
+                </tr>
+            </thead>
+            <tbody id="recycleList">
+                <tr><td colspan="4" style="padding:32px;text-align:center;color:var(--text-secondary);">加载中...</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+{{end}}
+{{define "scripts"}}
+<script>
+(function() {
+    var token = localStorage.getItem('access_token');
+    if (!token) {
+        window.location.replace('/login');
+        return;
+    }
+    var el = document.getElementById('navUsername');
+    apiFetch('/api/auth/me', {}).then(function(r) { return r.json(); }).then(function(data) {
+        if (data && data.username && el) el.textContent = data.username;
+    }).catch(function() {});
+    refreshRecycle();
+})();
+
+function refreshRecycle() {
+    apiFetch('/api/files/recycle', {}).then(function(r) {
+        if (!r.ok) throw new Error('failed');
+        return r.json();
+    }).then(function(data) {
+        renderRecycle(data.files);
+    }).catch(function() {
+        document.getElementById('recycleList').innerHTML = '<tr><td colspan="4" style="padding:32px;text-align:center;color:var(--danger);">加载失败</td></tr>';
+    });
+}
+
+function renderRecycle(files) {
+    var tbody = document.getElementById('recycleList');
+    if (!files || files.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" style="padding:32px;text-align:center;color:var(--text-secondary);">回收站为空</td></tr>';
+        return;
+    }
+    var html = '';
+    for (var i = 0; i < files.length; i++) {
+        var f = files[i];
+        html += '<tr style="border-bottom:1px solid var(--border);">';
+        html += '<td style="padding:10px 16px;">' + (f.is_dir ? '📁 ' : '📄 ') + escapeHtml(f.name) + '</td>';
+        html += '<td style="padding:10px 16px;text-align:right;font-size:13px;color:var(--text-secondary);">' + (f.is_dir ? '-' : formatSize(f.size)) + '</td>';
+        html += '<td style="padding:10px 16px;text-align:right;font-size:13px;color:var(--text-secondary);">' + (f.deleted_at || '').substring(0, 10) + '</td>';
+        html += '<td style="padding:10px 16px;text-align:right;">';
+        html += '<button onclick="restoreFile(' + f.id + ')" style="font-size:12px;margin-right:4px;background:none;border:1px solid var(--primary);border-radius:4px;padding:3px 8px;cursor:pointer;color:var(--primary);">恢复</button>';
+        html += '<button onclick="permanentDelete(' + f.id + ',' + (f.is_dir ? 'true' : 'false') + ')" style="font-size:12px;background:none;border:1px solid var(--danger);border-radius:4px;padding:3px 8px;cursor:pointer;color:var(--danger);">永久删除</button>';
+        html += '</td>';
+        html += '</tr>';
+    }
+    tbody.innerHTML = html;
+}
+
+function restoreFile(id) {
+    apiFetch('/api/files/' + id + '/restore', {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': getCSRFToken() }
+    }).then(function(r) {
+        if (r.ok) {
+            refreshRecycle();
+        } else {
+            r.json().then(function(d) { alert(d.error || '恢复失败'); });
+        }
+    }).catch(function() { alert('恢复失败'); });
+}
+
+function permanentDelete(id, isDir) {
+    if (!isDir) {
+        if (!confirm('确认永久删除？此操作不可撤销！')) return;
+        doPermanentDelete(id);
+        return;
+    }
+    apiFetch('/api/files/permanent-preview/' + id, {}).then(function(r) {
+        if (!r.ok) throw new Error('preview failed');
+        return r.json();
+    }).then(function(data) {
+        var msg = '确认永久删除？';
+        var parts = [];
+        if (data.dir_count > 0) parts.push(data.dir_count + '个文件夹');
+        if (data.file_count > 0) parts.push(data.file_count + '个文件');
+        if (parts.length > 0) msg += '此操作还会使该文件夹中' + parts.join('、') + '被永久删除。';
+        else msg += '此操作不可撤销！';
+        if (confirm(msg)) doPermanentDelete(id);
+    }).catch(function() { alert('获取删除预览失败'); });
+}
+
+function doPermanentDelete(id) {
+    apiFetch('/api/files/' + id + '/permanent', {
+        method: 'DELETE',
+        headers: { 'X-CSRF-Token': getCSRFToken() }
+    }).then(function(r) {
+        if (r.ok) {
+            refreshRecycle();
+        } else {
+            r.json().then(function(d) { alert(d.error || '删除失败'); });
+        }
+    }).catch(function() { alert('删除失败'); });
+}
+</script>
+{{end}}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"networkdisk/internal/config"
 	"networkdisk/internal/handler"
@@ -59,10 +60,64 @@ func Run(configPath string) error {
 	fileSvc := service.NewFileService(st, fileStorage, thumbnailSvc, cfg)
 	fileSvc.CleanupTempFiles()
 
-	authH := handler.NewAuthHandler(userSvc)
+	shareSvc := service.NewShareService(st, fileSvc, cfg)
+
+	authH := handler.NewAuthHandler(userSvc, fileSvc)
 	fileH := handler.NewFileHandler(fileSvc)
-	mux, stopRateLimiter := router.New(authH, fileH, cfg)
+	sysH := handler.NewSystemHandler(fileSvc)
+	shareH := handler.NewShareHandler(shareSvc, fileSvc, cfg)
+	mux, stopRateLimiter := router.New(authH, fileH, sysH, shareH, cfg)
 	defer stopRateLimiter()
+
+	recycleDone := startDailyTimer(3, func() {
+		cleaned, err := fileSvc.AutoCleanRecycle()
+		if err != nil {
+			logger.Error("auto clean recycle failed", "error", err)
+		} else if cleaned > 0 {
+			logger.Info("auto clean recycle completed", "cleaned", cleaned)
+		}
+	})
+	defer close(recycleDone)
+
+	chunkDone := startHourlyTimer(func() {
+		cleaned, err := fileSvc.CleanStaleChunks()
+		if err != nil {
+			logger.Error("clean stale chunks failed", "error", err)
+		} else if cleaned > 0 {
+			logger.Info("cleaned stale upload chunks", "sessions", cleaned)
+		}
+	})
+	defer close(chunkDone)
+
+	calibrateDone := startDailyTimer(4, func() {
+		fixed, err := fileSvc.CalibrateAllStorage()
+		if err != nil {
+			logger.Error("storage calibration failed", "error", err)
+		} else if fixed > 0 {
+			logger.Info("storage calibration completed", "users_calibrated", fixed)
+		}
+	})
+	defer close(calibrateDone)
+
+	auditCleanDone := startDailyTimer(5, func() {
+		deleted, err := fileSvc.CleanExpiredAuditLogs()
+		if err != nil {
+			logger.Error("audit log cleanup failed", "error", err)
+		} else if deleted > 0 {
+			logger.Info("cleaned expired audit logs", "deleted", deleted)
+		}
+	})
+	defer close(auditCleanDone)
+
+	tempDownloadCleanDone := startHourlyTimer(func() {
+		cleaned, err := shareSvc.CleanExpiredTempDownloads()
+		if err != nil {
+			logger.Error("temp download cleanup failed", "error", err)
+		} else if cleaned > 0 {
+			logger.Info("cleaned expired temp downloads", "count", cleaned)
+		}
+	})
+	defer close(tempDownloadCleanDone)
 
 	srv := &http.Server{
 		Addr:         cfg.Addr(),
@@ -72,6 +127,10 @@ func Run(configPath string) error {
 	}
 
 	reloadDone := config.StartReloadWatcher(configPath, func(newCfg *config.Config) {
+		userSvc.UpdateConfig(newCfg)
+		thumbnailSvc.UpdateConfig(newCfg)
+		fileSvc.UpdateConfig(newCfg)
+		shareSvc.UpdateConfig(newCfg)
 		logger.Info("config reloaded")
 	})
 
@@ -105,4 +164,40 @@ func Run(configPath string) error {
 	}
 
 	return nil
+}
+
+func startDailyTimer(hourOffset int, fn func()) chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		for {
+			now := time.Now()
+			next := time.Date(now.Year(), now.Month(), now.Day()+1, hourOffset, 0, 0, 0, now.Location())
+			d := next.Sub(now)
+			if d < 0 {
+				d = time.Hour
+			}
+			select {
+			case <-time.After(d):
+				fn()
+			case <-done:
+				return
+			}
+		}
+	}()
+	return done
+}
+
+func startHourlyTimer(fn func()) chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-time.After(time.Hour):
+				fn()
+			case <-done:
+				return
+			}
+		}
+	}()
+	return done
 }

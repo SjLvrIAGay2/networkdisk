@@ -16,7 +16,7 @@ max_idle_conns = 10
 conn_max_lifetime = "5m"
 
 [storage]
-root = "./storage"
+root = "/Volumes/.storage"
 max_file_size = 524288000
 thumbnail_max_size = 20971520
 thumbnail_quality = 80
@@ -34,6 +34,10 @@ refresh_expire = "168h"
 bcrypt_cost = 12
 
 [log]
-level = "info"
+level = "debug"
 format = "pattern"
 file = "logs/log.log"
+
+[share]
+default_expire = ""
+max_password_attempts = 5

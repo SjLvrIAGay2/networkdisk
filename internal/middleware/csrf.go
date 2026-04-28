@@ -12,20 +12,25 @@ func CSRF() func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			cookie, err := r.Cookie("csrf_token")
 			if err != nil || cookie.Value == "" {
-				token, err := generateCSRFToken()
-				if err != nil {
-					http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+				if slices.Contains([]string{"GET", "HEAD", "OPTIONS"}, r.Method) {
+					token, err := generateCSRFToken()
+					if err != nil {
+						http.Error(w, `{"error":"服务器内部错误"}`, http.StatusInternalServerError)
+						return
+					}
+					http.SetCookie(w, &http.Cookie{
+						Name:     "csrf_token",
+						Value:    token,
+						Path:     "/",
+						Secure:   r.TLS != nil,
+						SameSite: http.SameSiteStrictMode,
+						MaxAge:   86400,
+					})
+					next.ServeHTTP(w, r)
 					return
 				}
-				cookie = &http.Cookie{
-					Name:     "csrf_token",
-					Value:    token,
-					Path:     "/",
-					Secure:   true,
-					SameSite: http.SameSiteStrictMode,
-					MaxAge:   86400,
-				}
-				http.SetCookie(w, cookie)
+				http.Error(w, `{"error":"无效的CSRF令牌"}`, http.StatusForbidden)
+				return
 			}
 			if slices.Contains([]string{"GET", "HEAD", "OPTIONS"}, r.Method) {
 				next.ServeHTTP(w, r)
@@ -36,7 +41,7 @@ func CSRF() func(http.Handler) http.Handler {
 				header = r.FormValue("csrf_token")
 			}
 			if header == "" || header != cookie.Value {
-				http.Error(w, `{"error":"invalid csrf token"}`, http.StatusForbidden)
+				http.Error(w, `{"error":"无效的CSRF令牌"}`, http.StatusForbidden)
 				return
 			}
 			next.ServeHTTP(w, r)

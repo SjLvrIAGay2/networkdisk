@@ -1,0 +1,66 @@
+{{template "base.html" .}}
+{{define "title"}}分享文件 - NetworkDisk{{end}}
+{{define "nav-right"}}{{end}}
+{{define "sidebar"}}{{end}}
+{{define "content"}}
+<div class="card" style="max-width:480px;margin:40px auto;text-align:center;">
+    {{if .error}}
+    <div class="error-message" style="margin-bottom:16px;">{{.error}}</div>
+    <a href="/" class="btn btn-primary">返回首页</a>
+    {{else if .token}}
+    <h3 style="margin-bottom:8px;">{{.fileName}}</h3>
+    <p style="color:var(--text-secondary);font-size:14px;margin-bottom:16px;">
+        {{if .fileSize}}大小: <span id="fileSizeDisplay"></span>{{end}}
+    </p>
+    <p style="color:var(--text-secondary);font-size:13px;margin-bottom:20px;">此文件已加密，请输入分享密码</p>
+    <div class="form-group">
+        <input type="password" id="sharePassword" placeholder="请输入分享密码" style="max-width:100%;">
+    </div>
+    <div id="passwordError" class="error-message" style="display:none;margin-bottom:8px;"></div>
+    <button class="btn btn-primary" onclick="verifyPassword()">验证</button>
+    {{end}}
+</div>
+{{end}}
+{{define "scripts"}}
+<script>
+function verifyPassword() {
+    var pw = document.getElementById('sharePassword').value.trim();
+    if (!pw) return;
+    var errEl = document.getElementById('passwordError');
+    errEl.style.display = 'none';
+    fetch('/s/{{.token}}/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: pw })
+    }).then(function(r) { return r.json(); }).then(function(d) {
+        if (d.ok) {
+            window.location.href = '/s/{{.token}}/download?verify_token=' + encodeURIComponent(d.verify_token);
+        } else {
+            errEl.textContent = d.error || '验证失败';
+            errEl.style.display = 'block';
+        }
+    }).catch(function() {
+        errEl.textContent = '网络错误';
+        errEl.style.display = 'block';
+    });
+}
+
+function formatSize(bytes) {
+    if (!bytes || bytes === 0) return '-';
+    var units = ['B', 'KB', 'MB', 'GB'];
+    var i = 0;
+    var size = bytes;
+    while (size >= 1024 && i < units.length - 1) { size /= 1024; i++; }
+    return size.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+}
+
+(function() {
+    {{if .fileSize}}
+    document.getElementById('fileSizeDisplay').textContent = formatSize({{.fileSize}});
+    {{end}}
+    document.getElementById('sharePassword').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') verifyPassword();
+    });
+})();
+</script>
+{{end}}

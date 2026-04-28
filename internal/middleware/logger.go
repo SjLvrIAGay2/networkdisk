@@ -30,14 +30,22 @@ func Logger() func(http.Handler) http.Handler {
 			start := time.Now()
 			wrapped := &responseWriter{ResponseWriter: w, status: http.StatusOK}
 			next.ServeHTTP(wrapped, r)
-			logging.Logger().Info("request",
+			args := []any{
 				"method", r.Method,
 				"path", r.URL.Path,
 				"status", wrapped.status,
 				"size", wrapped.size,
 				"duration", time.Since(start).String(),
 				"remote", r.RemoteAddr,
-			)
+			}
+			switch {
+			case wrapped.status >= 500:
+				logging.Logger().Error("request", args...)
+			case wrapped.status >= 400:
+				logging.Logger().Warn("request", args...)
+			default:
+				logging.Logger().Info("request", args...)
+			}
 		})
 	}
 }

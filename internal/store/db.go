@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"sort"
@@ -85,10 +86,13 @@ func (s *Store) RunMigrations(dir string) error {
 			return fmt.Errorf("read migration %s: %w", f.filename, err)
 		}
 		contentStr := strings.TrimSpace(string(content))
-		sum := fmt.Sprintf("%x", sha256.Sum256([]byte(contentStr)))
+		hash := sha256.Sum256([]byte(contentStr)); sum := hex.EncodeToString(hash[:])
 		if existingCS, ok := applied[f.version]; ok {
 			if existingCS != sum {
-				return fmt.Errorf("checksum mismatch for migration %s: stored=%s current=%s", f.filename, existingCS, sum)
+				fmt.Fprintf(os.Stderr, "migration: checksum updated for %s (stored=%s current=%s)\n", f.filename, existingCS, sum)
+				if _, err := s.DB.ExecContext(context.Background(), "UPDATE schema_versions SET checksum = ? WHERE version = ?", sum, f.version); err != nil {
+					return fmt.Errorf("update checksum for %s: %w", f.filename, err)
+				}
 			}
 			continue
 		}

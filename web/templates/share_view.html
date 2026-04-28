@@ -1,0 +1,52 @@
+{{template "base.html" .}}
+{{define "title"}}{{.fileName}} - NetworkDisk{{end}}
+{{define "nav-right"}}{{end}}
+{{define "sidebar"}}{{end}}
+{{define "content"}}
+<div class="card" style="max-width:800px;margin:20px auto;">
+    <h2 style="margin-bottom:8px;">{{.fileName}}</h2>
+    <p style="color:var(--text-secondary);font-size:14px;margin-bottom:20px;">
+        大小: <span id="fileSizeDisplay"></span>
+        {{if .mimeType}} | 类型: {{.mimeType}}{{end}}
+    </p>
+    <div id="previewArea" style="margin-bottom:20px;">
+        {{if eq .previewType "image"}}
+        <img id="previewImage" src="/s/{{.token}}/download?inline=1" style="max-width:100%;max-height:70vh;display:block;margin:0 auto;" alt="{{.fileName}}">
+        {{else if eq .previewType "video"}}
+        <video controls style="max-width:100%;max-height:70vh;display:block;margin:0 auto;">
+            <source src="/s/{{.token}}/download?inline=1" type="{{.mimeType}}">
+            您的浏览器不支持此视频格式。
+        </video>
+        {{else if eq .previewType "audio"}}
+        <audio controls style="width:100%;margin:20px 0;">
+            <source src="/s/{{.token}}/download?inline=1" type="{{.mimeType}}">
+            您的浏览器不支持此音频格式。
+        </audio>
+        {{else if eq .previewType "markdown"}}
+        <div class="markdown-body" style="padding:16px;border:1px solid var(--border);border-radius:8px;background:var(--surface);line-height:1.7;overflow-x:auto;">{{.content}}</div>
+        {{else if eq .previewType "text"}}
+        <pre style="padding:16px;border:1px solid var(--border);border-radius:8px;background:var(--surface);overflow-x:auto;white-space:pre-wrap;font-size:13px;line-height:1.6;max-height:70vh;">{{.content}}</pre>
+        {{else}}
+        <p style="text-align:center;color:var(--text-secondary);padding:40px;">暂不支持预览此文件类型</p>
+        {{end}}
+    </div>
+    <div style="text-align:center;">
+        <a href="/s/{{.token}}/download" class="btn btn-primary">下载文件</a>
+    </div>
+</div>
+{{end}}
+{{define "scripts"}}
+<script>
+function formatSize(bytes) {
+    if (!bytes || bytes === 0) return '-';
+    var units = ['B', 'KB', 'MB', 'GB'];
+    var i = 0;
+    var size = bytes;
+    while (size >= 1024 && i < units.length - 1) { size /= 1024; i++; }
+    return size.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+}
+(function() {
+    document.getElementById('fileSizeDisplay').textContent = formatSize({{.fileSize}});
+})();
+</script>
+{{end}}

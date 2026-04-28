@@ -13,7 +13,10 @@ func main() {
 		configPath = os.Args[1]
 	}
 	if err := app.Run(configPath); err != nil {
-		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
+		_, err := fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
+		if err != nil {
+			return
+		}
 		os.Exit(1)
 	}
 }

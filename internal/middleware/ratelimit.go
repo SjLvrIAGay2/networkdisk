@@ -1,10 +1,12 @@
 package middleware
 
 import (
-	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
+
+	"networkdisk/internal/logging"
 )
 
 type rateBucket struct {
@@ -91,15 +93,32 @@ func RateLimit(limit int, window time.Duration) (func(http.Handler) http.Handler
 	rl := NewRateLimiter(limit, window)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			host, _, err := net.SplitHostPort(r.RemoteAddr)
-			if err != nil {
-				host = r.RemoteAddr
-			}
+			host := ClientIP(r)
 			if !rl.Allow(host) {
-				http.Error(w, `{"error":"rate limit exceeded"}`, http.StatusTooManyRequests)
+				logging.Logger().Warn("rate limited", "remote", host, "path", r.URL.Path)
+				http.Error(w, `{"error":"请求过于频繁，请稍后重试"}`, http.StatusTooManyRequests)
 				return
 			}
 			next.ServeHTTP(w, r)
 		})
 	}, rl.Stop
+}
+
+func ClientIP(r *http.Request) string {
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		return strings.TrimSpace(xri)
+	}
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		idx := strings.IndexByte(xff, ',')
+		if idx > 0 {
+			return strings.TrimSpace(xff[:idx])
+		}
+		return strings.TrimSpace(xff)
+	}
+	host := r.RemoteAddr
+	idx := strings.LastIndexByte(host, ':')
+	if idx > 0 {
+		return host[:idx]
+	}
+	return host
 }

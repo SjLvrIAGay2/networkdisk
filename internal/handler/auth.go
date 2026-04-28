@@ -4,56 +4,59 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strconv"
 
+	"networkdisk/internal/logging"
 	"networkdisk/internal/middleware"
 	"networkdisk/internal/service"
 )
 
 type AuthHandler struct {
-	svc *service.UserService
+	svc     *service.UserService
+	fileSvc *service.FileService
 }
 
-func NewAuthHandler(svc *service.UserService) *AuthHandler {
-	return &AuthHandler{svc: svc}
+func NewAuthHandler(svc *service.UserService, fileSvc *service.FileService) *AuthHandler {
+	return &AuthHandler{svc: svc, fileSvc: fileSvc}
 }
 
 func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var in service.RegisterInput
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		writeError(w, http.StatusBadRequest, "请求格式无效")
 		return
 	}
 	user, err := h.svc.Register(in)
 	if err != nil {
 		if errors.Is(err, service.ErrUsernameTaken) {
-			writeError(w, http.StatusConflict, "username already taken")
+			writeError(w, http.StatusConflict, "用户名已被占用")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal server error")
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"id":       user.ID,
 		"username": user.Username,
 	})
+	h.fileSvc.RecordAudit(user.ID, "register", "user", user.ID, user.Username, middleware.ClientIP(r))
 }
 
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var in service.LoginInput
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		writeError(w, http.StatusBadRequest, "请求格式无效")
 		return
 	}
 	user, tokens, err := h.svc.Login(in)
 	if err != nil {
 		if errors.Is(err, service.ErrInvalidCredentials) {
-			writeError(w, http.StatusUnauthorized, "invalid username or password")
+			logging.Logger().Warn("login failed", "username", in.Username, "remote", middleware.ClientIP(r))
+			writeError(w, http.StatusUnauthorized, "用户名或密码错误")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal server error")
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
@@ -61,7 +64,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		Value:    tokens.RefreshToken,
 		Path:     "/api/auth",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   r.TLS != nil,
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   604800,
 	})
@@ -69,7 +72,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		Name:     "csrf_token",
 		Value:    tokens.CSRFToken,
 		Path:     "/",
-		Secure:   true,
+		Secure:   r.TLS != nil,
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   86400,
 	})
@@ -80,12 +83,13 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		"expires_in":   tokens.ExpiresIn,
 		"csrf_token":   tokens.CSRFToken,
 	})
+	h.fileSvc.RecordAudit(user.ID, "login", "user", user.ID, user.Username, middleware.ClientIP(r))
 }
 
 func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	if cookie, err := r.Cookie("refresh_token"); err == nil && cookie.Value != "" {
 		if err := h.svc.Logout(cookie.Value); err != nil {
-				writeError(w, http.StatusInternalServerError, "internal server error")
+				writeError(w, http.StatusInternalServerError, "服务器内部错误")
 				return
 			}
 	}
@@ -94,23 +98,22 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 		Value:    "",
 		Path:     "/api/auth",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   r.TLS != nil,
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   -1,
 	})
-	writeJSON(w, http.StatusOK, map[string]string{"message": "logged out"})
+	writeJSON(w, http.StatusOK, map[string]string{"message": "已退出登录"})
 }
 
 func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
-	userIDStr, _ := r.Context().Value(middleware.UserIDKey).(string)
-	userID, err := strconv.ParseInt(userIDStr, 10, 64)
-	if err != nil {
-		writeError(w, http.StatusUnauthorized, "invalid user")
+	userID, _ := r.Context().Value(middleware.UserIDKey).(int64)
+	if userID == 0 {
+		writeError(w, http.StatusUnauthorized, "用户无效")
 		return
 	}
 	user, err := h.svc.UserByID(userID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "user not found")
+		writeError(w, http.StatusNotFound, "用户不存在")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -120,10 +123,9 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
-	userIDStr, _ := r.Context().Value(middleware.UserIDKey).(string)
-	userID, err := strconv.ParseInt(userIDStr, 10, 64)
-	if err != nil {
-		writeError(w, http.StatusUnauthorized, "invalid user")
+	userID, _ := r.Context().Value(middleware.UserIDKey).(int64)
+	if userID == 0 {
+		writeError(w, http.StatusUnauthorized, "用户无效")
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
@@ -132,46 +134,47 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		NewPassword string `json:"new_password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		writeError(w, http.StatusBadRequest, "请求格式无效")
 		return
 	}
 	if err := h.svc.ChangePassword(userID, body.OldPassword, body.NewPassword); err != nil {
 		if errors.Is(err, service.ErrInvalidCredentials) {
-			writeError(w, http.StatusUnauthorized, "invalid old password")
+			writeError(w, http.StatusUnauthorized, "原密码错误")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal server error")
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"message": "password changed"})
+	writeJSON(w, http.StatusOK, map[string]string{"message": "密码已修改"})
 }
 
 func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie("refresh_token")
 	if err != nil || cookie.Value == "" {
-		writeError(w, http.StatusUnauthorized, "no refresh token")
+		writeError(w, http.StatusUnauthorized, "缺少刷新令牌")
 		return
 	}
 	user, tokens, err := h.svc.RefreshAccessToken(cookie.Value)
 	if err != nil {
 		if errors.Is(err, service.ErrTokenRevoked) {
+			logging.Logger().Warn("refresh token revoked", "remote", middleware.ClientIP(r))
 			http.SetCookie(w, &http.Cookie{
 				Name:     "refresh_token",
 				Value:    "",
 				Path:     "/api/auth",
 				HttpOnly: true,
-				Secure:   true,
+				Secure:   r.TLS != nil,
 				SameSite: http.SameSiteStrictMode,
 				MaxAge:   -1,
 			})
-			writeError(w, http.StatusUnauthorized, "token revoked, possible theft detected")
+			writeError(w, http.StatusUnauthorized, "令牌已吊销，可能存在安全风险")
 			return
 		}
 		if errors.Is(err, service.ErrTokenExpired) {
-			writeError(w, http.StatusUnauthorized, "refresh token expired")
+			writeError(w, http.StatusUnauthorized, "刷新令牌已过期")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal server error")
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
@@ -179,7 +182,7 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		Value:    tokens.RefreshToken,
 		Path:     "/api/auth",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   r.TLS != nil,
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   604800,
 	})
@@ -187,7 +190,7 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		Name:     "csrf_token",
 		Value:    tokens.CSRFToken,
 		Path:     "/",
-		Secure:   true,
+		Secure:   r.TLS != nil,
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   86400,
 	})
@@ -201,9 +204,14 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
+	body, err := json.Marshal(data)
+	if err != nil {
+		http.Error(w, `{"error":"服务器内部错误"}`, http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(data)
+	w.Write(body)
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {

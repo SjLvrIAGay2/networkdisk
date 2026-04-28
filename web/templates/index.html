@@ -7,7 +7,8 @@
 {{end}}
 {{define "sidebar"}}
 <a href="/">文件</a>
-<a href="/">共享</a>
+<a href="/recycle">回收站</a>
+<a href="/shares">共享</a>
 {{end}}
 {{define "content"}}
 <div>
@@ -64,53 +65,41 @@
         </div>
     </div>
 </div>
+
+<div id="createShareModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.4);z-index:200;align-items:center;justify-content:center;">
+    <div style="background:var(--surface);border-radius:8px;padding:24px;min-width:360px;">
+        <h3 style="margin-bottom:16px;">创建分享</h3>
+        <div class="form-group">
+            <label>密码 (可选)</label>
+            <input type="text" id="sharePassword" placeholder="留空则不设密码" style="max-width:100%;">
+        </div>
+        <div class="form-group">
+            <label>有效期</label>
+            <select id="shareExpire" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);">
+                <option value="0">永久</option>
+                <option value="1">1天</option>
+                <option value="7">7天</option>
+                <option value="30">30天</option>
+                <option value="90">90天</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>下载次数限制 (0=不限)</label>
+            <input type="number" id="shareMaxDownloads" value="0" min="0" style="max-width:100%;">
+        </div>
+        <div id="shareError" class="error-message" style="display:none;margin-bottom:8px;"></div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;">
+            <button class="btn" style="background:var(--border);" onclick="hideCreateShareModal()">取消</button>
+            <button class="btn btn-primary" onclick="doCreateShare()">创建</button>
+        </div>
+    </div>
+</div>
 {{end}}
 {{define "scripts"}}
 <script>
 var currentDir = null;
 var renameFileId = null;
-var refreshPromise = null;
-
-function apiFetch(url, options) {
-    var token = localStorage.getItem('access_token');
-    options = options || {};
-    options.headers = options.headers || {};
-    if (token) {
-        options.headers['Authorization'] = 'Bearer ' + token;
-    }
-    options.credentials = 'same-origin';
-    return fetch(url, options).then(function(r) {
-        if (r.status === 401 && token) {
-            if (!refreshPromise) {
-                refreshPromise = fetch('/api/auth/refresh', {
-                    method: 'POST',
-                    credentials: 'same-origin',
-                    headers: { 'X-CSRF-Token': getCSRFToken() }
-                }).then(function(refreshR) {
-                    if (!refreshR.ok) {
-                        localStorage.removeItem('access_token');
-                        window.location.replace('/login');
-                        throw new Error('session expired');
-                    }
-                    return refreshR.json();
-                }).then(function(data) {
-                    localStorage.setItem('access_token', data.access_token);
-                    if (data.csrf_token) {
-                        document.cookie = 'csrf_token=' + data.csrf_token + ';path=/;SameSite=Strict;Secure;max-age=86400';
-                    }
-                    return data;
-                }).finally(function() {
-                    refreshPromise = null;
-                });
-            }
-            return refreshPromise.then(function(data) {
-                options.headers['Authorization'] = 'Bearer ' + data.access_token;
-                return fetch(url, options);
-            });
-        }
-        return r;
-    });
-}
+var shareFileId = null;
 
 (function() {
     var token = localStorage.getItem('access_token');
@@ -137,32 +126,6 @@ function apiFetch(url, options) {
     refreshFiles();
 })();
 
-function handleLogout() {
-    var token = localStorage.getItem('access_token');
-    fetch('/api/auth/logout', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: {
-            'Authorization': 'Bearer ' + (token || ''),
-            'X-CSRF-Token': getCSRFToken()
-        }
-    }).finally(function() {
-        localStorage.removeItem('access_token');
-        window.location.replace('/login');
-    });
-}
-
-function getCSRFToken() {
-    var cookies = document.cookie.split(';');
-    for (var i = 0; i < cookies.length; i++) {
-        var c = cookies[i].trim();
-        if (c.startsWith('csrf_token=')) {
-            return c.substring('csrf_token='.length);
-        }
-    }
-    return '';
-}
-
 function navigateTo(dirId) {
     currentDir = dirId;
     refreshFiles();
@@ -181,23 +144,8 @@ function refreshFiles() {
     });
 }
 
-function formatSize(bytes) {
-    if (bytes === 0) return '-';
-    var units = ['B', 'KB', 'MB', 'GB'];
-    var i = 0;
-    var size = bytes;
-    while (size >= 1024 && i < units.length - 1) { size /= 1024; i++; }
-    return size.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
-}
-
 function escapeJsAttr(str) {
-    return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-}
-
-function escapeHtml(str) {
-    var div = document.createElement('div');
-    div.appendChild(document.createTextNode(str));
-    return div.innerHTML;
+    return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
 }
 
 function renderFiles(files) {
@@ -212,13 +160,15 @@ function renderFiles(files) {
         var icon = f.is_dir ? '📁' : '📄';
         var nameHtml = f.is_dir
             ? '<a href="#" onclick="navigateTo(' + f.id + ');return false;" style="color:var(--text);text-decoration:none;">' + icon + ' ' + escapeHtml(f.name) + '</a>'
-            : '<a href="/api/files/download/' + f.id + '" style="color:var(--text);text-decoration:none;">' + icon + ' ' + escapeHtml(f.name) + '</a>';
+            : '<a href="#" onclick="downloadFile(' + f.id + ',\'' + escapeJsAttr(f.name) + '\');return false;" style="color:var(--text);text-decoration:none;">' + icon + ' ' + escapeHtml(f.name) + '</a>';
         var sizeStr = f.is_dir ? '-' : formatSize(f.size);
+        var shareBtn = f.is_dir ? '' : '<button onclick="showCreateShareModal(' + f.id + ')" style="font-size:12px;margin-right:4px;background:none;border:1px solid var(--primary);border-radius:4px;padding:3px 8px;cursor:pointer;color:var(--primary);">分享</button>';
         html += '<tr style="border-bottom:1px solid var(--border);">';
         html += '<td style="padding:10px 16px;">' + nameHtml + '</td>';
         html += '<td style="padding:10px 16px;text-align:right;font-size:13px;color:var(--text-secondary);">' + sizeStr + '</td>';
         html += '<td style="padding:10px 16px;text-align:right;font-size:13px;color:var(--text-secondary);">' + (f.created_at || '').substring(0, 10) + '</td>';
         html += '<td style="padding:10px 16px;text-align:right;">';
+        html += shareBtn;
         html += '<button onclick="showRenameModal(' + f.id + ',\'' + escapeJsAttr(f.name) + '\')" style="font-size:12px;margin-right:4px;background:none;border:1px solid var(--border);border-radius:4px;padding:3px 8px;cursor:pointer;color:var(--text);">重命名</button>';
         html += '<button onclick="deleteFile(' + f.id + ')" style="font-size:12px;background:none;border:1px solid var(--danger);border-radius:4px;padding:3px 8px;cursor:pointer;color:var(--danger);">删除</button>';
         html += '</td>';
@@ -303,6 +253,50 @@ function deleteFile(id) {
             r.json().then(function(d) { alert(d.error || '删除失败'); });
         }
     }).catch(function() { alert('删除失败'); });
+}
+
+function showCreateShareModal(fileId) {
+    shareFileId = fileId;
+    document.getElementById('createShareModal').style.display = 'flex';
+    document.getElementById('sharePassword').value = '';
+    document.getElementById('shareExpire').value = '0';
+    document.getElementById('shareMaxDownloads').value = '0';
+    document.getElementById('shareError').style.display = 'none';
+}
+
+function hideCreateShareModal() {
+    document.getElementById('createShareModal').style.display = 'none';
+    shareFileId = null;
+}
+
+function doCreateShare() {
+    if (!shareFileId) return;
+    var password = document.getElementById('sharePassword').value.trim();
+    var expireDays = parseInt(document.getElementById('shareExpire').value) || 0;
+    var maxDownloads = parseInt(document.getElementById('shareMaxDownloads').value) || 0;
+    var errEl = document.getElementById('shareError');
+    apiFetch('/api/shares', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': getCSRFToken()
+        },
+        body: JSON.stringify({
+            file_id: shareFileId,
+            password: password,
+            expire_days: expireDays,
+            max_downloads: maxDownloads
+        })
+    }).then(function(r) {
+        if (r.ok) {
+            hideCreateShareModal();
+        } else {
+            return r.json().then(function(d) { throw new Error(d.error || '创建失败'); });
+        }
+    }).catch(function(e) {
+        errEl.textContent = e.message || '创建失败';
+        errEl.style.display = 'block';
+    });
 }
 
 function handleUpload(input) {

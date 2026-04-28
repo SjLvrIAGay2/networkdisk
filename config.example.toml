@@ -20,6 +20,7 @@ root = "./storage"
 max_file_size = 524288000
 thumbnail_max_size = 20971520
 thumbnail_quality = 80
+ffmpeg_path = ""
 
 [upload]
 allowed_extensions = []
@@ -32,6 +33,10 @@ jwt_secret = "change-me-to-a-random-secret"
 jwt_expire = "15m"
 refresh_expire = "168h"
 bcrypt_cost = 12
+
+[share]
+default_expire = ""
+max_password_attempts = 5
 
 [log]
 level = "info"

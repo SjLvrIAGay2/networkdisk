@@ -18,7 +18,7 @@ func Recover() func(http.Handler) http.Handler {
 						"path", r.URL.Path,
 						"method", r.Method,
 					)
-					http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+					http.Error(w, `{"error":"服务器内部错误"}`, http.StatusInternalServerError)
 				}
 			}()
 			next.ServeHTTP(w, r)

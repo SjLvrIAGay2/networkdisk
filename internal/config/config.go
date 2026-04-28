@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/signal"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -35,10 +36,14 @@ type DatabaseConfig struct {
 }
 
 type StorageConfig struct {
-	Root             string `toml:"root"`
-	MaxFileSize      int64  `toml:"max_file_size"`
-	ThumbnailMaxSize int64  `toml:"thumbnail_max_size"`
-	ThumbnailQuality int    `toml:"thumbnail_quality"`
+	Root               string `toml:"root"`
+	MaxFileSize        int64  `toml:"max_file_size"`
+	ThumbnailMaxSize   int64  `toml:"thumbnail_max_size"`
+	ThumbnailQuality   int    `toml:"thumbnail_quality"`
+	ChunkSize          int64  `toml:"chunk_size"`
+	ChunkCleanTimeout  string `toml:"chunk_clean_timeout"`
+	AutoCleanRecycleDays int  `toml:"auto_clean_recycle_days"`
+	FfmpegPath         string `toml:"ffmpeg_path"`
 }
 
 type UploadConfig struct {
@@ -56,9 +61,15 @@ type AuthConfig struct {
 }
 
 type LogConfig struct {
-	Level  string `toml:"level"`
-	Format string `toml:"format"`
-	File   string `toml:"file"`
+	Level              string `toml:"level"`
+	Format             string `toml:"format"`
+	File               string `toml:"file"`
+	AuditRetentionDays int    `toml:"audit_retention_days"`
+}
+
+type ShareConfig struct {
+	DefaultExpire      string `toml:"default_expire"`
+	MaxPasswordAttempts int   `toml:"max_password_attempts"`
 }
 
 type Config struct {
@@ -68,6 +79,7 @@ type Config struct {
 	Upload   UploadConfig   `toml:"upload"`
 	Auth     AuthConfig     `toml:"auth"`
 	Log      LogConfig      `toml:"log"`
+	Share    ShareConfig    `toml:"share"`
 }
 
 var (
@@ -89,6 +101,10 @@ var defaults = map[string]interface{}{
 	"storage.max_file_size":    int64(100 << 20),
 	"storage.thumbnail_max_size": int64(50 << 20),
 	"storage.thumbnail_quality": 80,
+	"storage.chunk_size":          int64(10 << 20),
+	"storage.chunk_clean_timeout": "24h",
+	"storage.auto_clean_recycle_days": 30,
+	"storage.ffmpeg_path":         "",
 	"upload.detect_mime":       true,
 	"upload.on_name_conflict":  "rename",
 	"auth.jwt_expire":          "15m",
@@ -96,6 +112,9 @@ var defaults = map[string]interface{}{
 	"auth.bcrypt_cost":         12,
 	"log.level":                "info",
 	"log.format":               "text",
+	"log.audit_retention_days":  365,
+	"share.default_expire":      "",
+	"share.max_password_attempts": 5,
 }
 
 var reloadWhitelist = map[string]bool{
@@ -128,8 +147,12 @@ var envMapping = map[string]string{
 	"database.conn_max_lifetime":   "NETWORKDISK_DATABASE_CONN_MAX_LIFETIME",
 	"storage.root":                 "NETWORKDISK_STORAGE_ROOT",
 	"storage.max_file_size":        "NETWORKDISK_STORAGE_MAX_FILE_SIZE",
-	"storage.thumbnail_max_size":   "NETWORKDISK_STORAGE_THUMBNAIL_MAX_SIZE",
-	"storage.thumbnail_quality":    "NETWORKDISK_STORAGE_THUMBNAIL_QUALITY",
+	"storage.thumbnail_max_size":       "NETWORKDISK_STORAGE_THUMBNAIL_MAX_SIZE",
+	"storage.thumbnail_quality":        "NETWORKDISK_STORAGE_THUMBNAIL_QUALITY",
+	"storage.chunk_size":               "NETWORKDISK_STORAGE_CHUNK_SIZE",
+	"storage.chunk_clean_timeout":      "NETWORKDISK_STORAGE_CHUNK_CLEAN_TIMEOUT",
+	"storage.auto_clean_recycle_days":  "NETWORKDISK_STORAGE_AUTO_CLEAN_RECYCLE_DAYS",
+	"storage.ffmpeg_path":             "NETWORKDISK_STORAGE_FFMPEG_PATH",
 	"upload.allowed_extensions":    "NETWORKDISK_UPLOAD_ALLOWED_EXTENSIONS",
 	"upload.blocked_extensions":    "NETWORKDISK_UPLOAD_BLOCKED_EXTENSIONS",
 	"upload.detect_mime":           "NETWORKDISK_UPLOAD_DETECT_MIME",
@@ -141,6 +164,9 @@ var envMapping = map[string]string{
 	"log.level":                    "NETWORKDISK_LOG_LEVEL",
 	"log.format":                   "NETWORKDISK_LOG_FORMAT",
 	"log.file":                     "NETWORKDISK_LOG_FILE",
+	"log.audit_retention_days":      "NETWORKDISK_LOG_AUDIT_RETENTION_DAYS",
+	"share.default_expire":          "NETWORKDISK_SHARE_DEFAULT_EXPIRE",
+	"share.max_password_attempts":   "NETWORKDISK_SHARE_MAX_PASSWORD_ATTEMPTS",
 }
 
 func Load(path string) (*Config, error) {
@@ -249,8 +275,14 @@ func fieldName(tomlKey string) string {
 		"refresh_expire":     "RefreshExpire",
 		"bcrypt_cost":        "BcryptCost",
 		"max_file_size":      "MaxFileSize",
-		"thumbnail_max_size": "ThumbnailMaxSize",
-		"thumbnail_quality":  "ThumbnailQuality",
+		"thumbnail_max_size":       "ThumbnailMaxSize",
+		"thumbnail_quality":        "ThumbnailQuality",
+		"chunk_size":               "ChunkSize",
+		"chunk_clean_timeout":      "ChunkCleanTimeout",
+		"auto_clean_recycle_days":  "AutoCleanRecycleDays",
+		"audit_retention_days":     "AuditRetentionDays",
+		"default_expire":           "DefaultExpire",
+		"max_password_attempts":    "MaxPasswordAttempts",
 		"allowed_extensions": "AllowedExtensions",
 		"blocked_extensions": "BlockedExtensions",
 		"detect_mime":        "DetectMime",
@@ -299,6 +331,8 @@ func (c *Config) Clone() *Config {
 	mu.RLock()
 	defer mu.RUnlock()
 	clone := *c
+	clone.Upload.AllowedExtensions = append([]string{}, c.Upload.AllowedExtensions...)
+	clone.Upload.BlockedExtensions = append([]string{}, c.Upload.BlockedExtensions...)
 	return &clone
 }
 
@@ -406,11 +440,32 @@ func (c *Config) DSN() string {
 }
 
 func parseDuration(s string) (time.Duration, error) {
-	d, err := time.ParseDuration(s)
-	if err != nil {
-		return 0, fmt.Errorf("invalid duration %q: %w", s, err)
+	var total time.Duration
+	remaining := s
+	for {
+		idx := strings.IndexByte(remaining, 'd')
+		if idx == -1 {
+			break
+		}
+		numStr := remaining[:idx]
+		days, err := strconv.ParseInt(numStr, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid duration %q: %w", s, err)
+		}
+		total += time.Duration(days) * 24 * time.Hour
+		remaining = remaining[idx+1:]
 	}
-	return d, nil
+	if remaining != "" {
+		d, err := time.ParseDuration(remaining)
+		if err != nil {
+			return 0, fmt.Errorf("invalid duration %q: %w", s, err)
+		}
+		total += d
+	}
+	if total == 0 {
+		return 0, fmt.Errorf("invalid duration %q: zero duration", s)
+	}
+	return total, nil
 }
 
 func (c *Config) JWTExpireDuration() time.Duration {
@@ -465,6 +520,14 @@ func (c *Config) ConnMaxLifetimeDuration() time.Duration {
 	d, err := parseDuration(c.Database.ConnMaxLifetime)
 	if err != nil {
 		d = 5 * time.Minute
+	}
+	return d
+}
+
+func (c *Config) ChunkCleanTimeoutDuration() time.Duration {
+	d, err := parseDuration(c.Storage.ChunkCleanTimeout)
+	if err != nil {
+		d = 24 * time.Hour
 	}
 	return d
 }
