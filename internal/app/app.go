@@ -34,10 +34,12 @@ func Run(configPath string) error {
 	if err := logging.Init(cfg); err != nil {
 		return fmt.Errorf("init logging: %w", err)
 	}
-	logger := logging.Logger()
 
-	if cfg.Auth.JWTSecret == "" {
+if cfg.Auth.JWTSecret == "" {
 		return fmt.Errorf("auth.jwt_secret must be set")
+	}
+	if len(cfg.Auth.JWTSecret) < 32 {
+		return fmt.Errorf("auth.jwt_secret must be at least 32 characters")
 	}
 
 	st, err := store.New(cfg.DSN(), cfg.Database.MaxOpenConns, cfg.Database.MaxIdleConns, cfg.ConnMaxLifetimeDuration())
@@ -61,20 +63,24 @@ func Run(configPath string) error {
 	fileSvc.CleanupTempFiles()
 
 	shareSvc := service.NewShareService(st, fileSvc, cfg)
+	searchSvc := service.NewSearchService(st)
+	tagSvc := service.NewTagService(st)
 
 	authH := handler.NewAuthHandler(userSvc, fileSvc)
 	fileH := handler.NewFileHandler(fileSvc)
 	sysH := handler.NewSystemHandler(fileSvc)
 	shareH := handler.NewShareHandler(shareSvc, fileSvc, cfg)
-	mux, stopRateLimiter := router.New(authH, fileH, sysH, shareH, cfg)
+	searchH := handler.NewSearchHandler(searchSvc)
+	tagH := handler.NewTagHandler(tagSvc)
+	mux, stopRateLimiter := router.New(authH, fileH, sysH, shareH, searchH, tagH, cfg)
 	defer stopRateLimiter()
 
 	recycleDone := startDailyTimer(3, func() {
 		cleaned, err := fileSvc.AutoCleanRecycle()
 		if err != nil {
-			logger.Error("auto clean recycle failed", "error", err)
+			logging.Error(context.Background(), "background", "auto clean recycle failed", "error", err)
 		} else if cleaned > 0 {
-			logger.Info("auto clean recycle completed", "cleaned", cleaned)
+			logging.Info(context.Background(), "background", "auto clean recycle completed", "cleaned", cleaned)
 		}
 	})
 	defer close(recycleDone)
@@ -82,9 +88,9 @@ func Run(configPath string) error {
 	chunkDone := startHourlyTimer(func() {
 		cleaned, err := fileSvc.CleanStaleChunks()
 		if err != nil {
-			logger.Error("clean stale chunks failed", "error", err)
+			logging.Error(context.Background(), "background", "clean stale chunks failed", "error", err)
 		} else if cleaned > 0 {
-			logger.Info("cleaned stale upload chunks", "sessions", cleaned)
+			logging.Info(context.Background(), "background", "cleaned stale upload chunks", "sessions", cleaned)
 		}
 	})
 	defer close(chunkDone)
@@ -92,9 +98,9 @@ func Run(configPath string) error {
 	calibrateDone := startDailyTimer(4, func() {
 		fixed, err := fileSvc.CalibrateAllStorage()
 		if err != nil {
-			logger.Error("storage calibration failed", "error", err)
+			logging.Error(context.Background(), "background", "storage calibration failed", "error", err)
 		} else if fixed > 0 {
-			logger.Info("storage calibration completed", "users_calibrated", fixed)
+			logging.Info(context.Background(), "background", "storage calibration completed", "users_calibrated", fixed)
 		}
 	})
 	defer close(calibrateDone)
@@ -102,9 +108,9 @@ func Run(configPath string) error {
 	auditCleanDone := startDailyTimer(5, func() {
 		deleted, err := fileSvc.CleanExpiredAuditLogs()
 		if err != nil {
-			logger.Error("audit log cleanup failed", "error", err)
+			logging.Error(context.Background(), "background", "audit log cleanup failed", "error", err)
 		} else if deleted > 0 {
-			logger.Info("cleaned expired audit logs", "deleted", deleted)
+			logging.Info(context.Background(), "background", "cleaned expired audit logs", "deleted", deleted)
 		}
 	})
 	defer close(auditCleanDone)
@@ -112,9 +118,9 @@ func Run(configPath string) error {
 	tempDownloadCleanDone := startHourlyTimer(func() {
 		cleaned, err := shareSvc.CleanExpiredTempDownloads()
 		if err != nil {
-			logger.Error("temp download cleanup failed", "error", err)
+			logging.Error(context.Background(), "background", "temp download cleanup failed", "error", err)
 		} else if cleaned > 0 {
-			logger.Info("cleaned expired temp downloads", "count", cleaned)
+			logging.Info(context.Background(), "background", "cleaned expired temp downloads", "count", cleaned)
 		}
 	})
 	defer close(tempDownloadCleanDone)
@@ -131,12 +137,12 @@ func Run(configPath string) error {
 		thumbnailSvc.UpdateConfig(newCfg)
 		fileSvc.UpdateConfig(newCfg)
 		shareSvc.UpdateConfig(newCfg)
-		logger.Info("config reloaded")
+		logging.Info(context.Background(), "background", "config reloaded")
 	})
 
 	serverErr := make(chan error, 1)
 	go func() {
-		logger.Info("server starting", "addr", srv.Addr)
+		logging.Info(context.Background(), "background", "server starting", "addr", srv.Addr)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serverErr <- err
 		}
@@ -147,11 +153,11 @@ func Run(configPath string) error {
 
 	select {
 	case err := <-serverErr:
-		logger.Error("server error", "error", err)
+		logging.Error(context.Background(), "background", "server error", "error", err)
 		close(reloadDone)
 		return err
 	case sig := <-quit:
-		logger.Info("shutting down", "signal", sig.String())
+		logging.Info(context.Background(), "background", "shutting down", "signal", sig.String())
 	}
 
 	close(reloadDone)
@@ -160,10 +166,19 @@ func Run(configPath string) error {
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
-		logger.Error("server shutdown error", "error", err)
+		logging.Error(context.Background(), "background", "server shutdown error", "error", err)
 	}
 
 	return nil
+}
+
+func safeCall(fn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			logging.Error(context.Background(), "background", "background task panicked", "panic", r)
+		}
+	}()
+	fn()
 }
 
 func startDailyTimer(hourOffset int, fn func()) chan struct{} {
@@ -178,7 +193,7 @@ func startDailyTimer(hourOffset int, fn func()) chan struct{} {
 			}
 			select {
 			case <-time.After(d):
-				fn()
+				safeCall(fn)
 			case <-done:
 				return
 			}
@@ -193,7 +208,7 @@ func startHourlyTimer(fn func()) chan struct{} {
 		for {
 			select {
 			case <-time.After(time.Hour):
-				fn()
+				safeCall(fn)
 			case <-done:
 				return
 			}

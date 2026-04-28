@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{block "title" .}}NetworkDisk{{end}}</title>
+    <link rel="stylesheet" href="/static/css/app.css">
     <style>
         :root {
             --bg: #f5f5f5;
@@ -28,6 +29,7 @@
             --border: #334155;
             --primary: #3b82f6;
             --primary-hover: #2563eb;
+            --danger: #ef4444;
             --navbar-bg: #1e293b;
             --navbar-shadow: 0 1px 3px rgba(0,0,0,0.3);
         }
@@ -213,16 +215,21 @@
 
         var refreshPromise = null;
 
+        var refreshRetryCount = 0;
+        var MAX_REFRESH_RETRIES = 1;
+
         function apiFetch(url, options) {
             var token = localStorage.getItem('access_token');
             options = options || {};
-            options.headers = options.headers || {};
+            var headers = options.headers || {};
             if (token) {
-                options.headers['Authorization'] = 'Bearer ' + token;
+                headers['Authorization'] = 'Bearer ' + token;
             }
+            options.headers = headers;
             options.credentials = 'same-origin';
             return fetch(url, options).then(function(r) {
-                if (r.status === 401 && token) {
+                if (r.status === 401 && token && refreshRetryCount < MAX_REFRESH_RETRIES) {
+                    refreshRetryCount++;
                     if (!refreshPromise) {
                         refreshPromise = fetch('/api/auth/refresh', {
                             method: 'POST',
@@ -246,10 +253,13 @@
                         });
                     }
                     return refreshPromise.then(function(data) {
-                        options.headers['Authorization'] = 'Bearer ' + data.access_token;
+                        headers['Authorization'] = 'Bearer ' + data.access_token;
+                        options.headers = headers;
+                        refreshRetryCount = 0;
                         return fetch(url, options);
                     });
                 }
+                refreshRetryCount = 0;
                 return r;
             });
         }
@@ -284,6 +294,10 @@
             return div.innerHTML;
         }
 
+        function escapeJsAttr(str) {
+            return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/</g, '\\x3c');
+        }
+
         function downloadFile(id, name) {
             apiFetch('/api/files/download/' + id, {}).then(function(r) {
                 if (!r.ok) throw new Error('download failed');
@@ -302,6 +316,7 @@
             });
         }
     </script>
+    <script src="/static/js/app.js"></script>
     {{block "scripts" .}}{{end}}
 </body>
 </html>

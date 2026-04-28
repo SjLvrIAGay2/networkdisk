@@ -3,6 +3,7 @@ package service
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
@@ -14,6 +15,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/h2non/filetype"
@@ -30,7 +33,9 @@ type FileService struct {
 	store     *store.Store
 	fileStore storage.StorageBackend
 	thumbnail *ThumbnailService
-	cfg       *config.Config
+	cfg       atomic.Value
+	hashMu    sync.Mutex
+	hashLocks map[string]*sync.Mutex
 }
 
 var (
@@ -41,11 +46,45 @@ var (
 )
 
 func NewFileService(s *store.Store, fs storage.StorageBackend, ts *ThumbnailService, cfg *config.Config) *FileService {
-	return &FileService{store: s, fileStore: fs, thumbnail: ts, cfg: cfg}
+	svc := &FileService{
+		store:     s,
+		fileStore: fs,
+		thumbnail: ts,
+		hashLocks: make(map[string]*sync.Mutex),
+	}
+	svc.cfg.Store(cfg)
+	return svc
+}
+
+func (svc *FileService) getCfg() *config.Config {
+	return svc.cfg.Load().(*config.Config)
 }
 
 func (svc *FileService) UpdateConfig(cfg *config.Config) {
-	svc.cfg = cfg
+	svc.cfg.Store(cfg)
+}
+
+func (svc *FileService) lockHash(hash string) {
+	svc.hashMu.Lock()
+	mu, ok := svc.hashLocks[hash]
+	if !ok {
+		mu = &sync.Mutex{}
+		svc.hashLocks[hash] = mu
+	}
+	svc.hashMu.Unlock()
+	mu.Lock()
+}
+
+func (svc *FileService) unlockHash(hash string) {
+	svc.hashMu.Lock()
+	mu, ok := svc.hashLocks[hash]
+	if ok {
+		delete(svc.hashLocks, hash)
+	}
+	svc.hashMu.Unlock()
+	if ok {
+		mu.Unlock()
+	}
 }
 
 func (svc *FileService) ListDirectory(parentID *int64, userID int64) ([]*model.File, error) {
@@ -83,7 +122,7 @@ func (svc *FileService) UploadFile(r io.Reader, name string, parentID *int64, us
 	}
 	defer os.Remove(tmpPath)
 
-	limited := io.LimitReader(r, svc.cfg.Storage.MaxFileSize+1)
+	limited := io.LimitReader(r, svc.getCfg().Storage.MaxFileSize+1)
 	hasher := sha256.New()
 	tee := io.TeeReader(limited, hasher)
 	written, err := io.Copy(tmpFile, tee)
@@ -93,23 +132,26 @@ func (svc *FileService) UploadFile(r io.Reader, name string, parentID *int64, us
 	}
 	tmpFile.Close()
 
-	if written > svc.cfg.Storage.MaxFileSize {
+	if written > svc.getCfg().Storage.MaxFileSize {
 		return nil, ErrFileTooLarge
 	}
 
 	hash := hex.EncodeToString(hasher.Sum(nil))
 
 	var mimeType string
-	if svc.cfg.Upload.DetectMime {
+	if svc.getCfg().Upload.DetectMime {
 		mimeType = svc.detectMime(tmpPath)
 	}
 
+	svc.lockHash(hash)
 	existingFile, err := svc.store.FileByHash(hash)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		svc.unlockHash(hash)
 		return nil, fmt.Errorf("check hash: %w", err)
 	}
 
 	if existingFile != nil {
+		svc.unlockHash(hash)
 		var oldFile *overwriteTarget
 		name, oldFile, err = svc.resolveNameConflict(name, ext, parentID, userID)
 		if err != nil {
@@ -145,6 +187,7 @@ func (svc *FileService) UploadFile(r io.Reader, name string, parentID *int64, us
 		}
 		return &UploadResult{File: file, Duplicate: true}, nil
 	}
+	svc.unlockHash(hash)
 
 	var oldFile *overwriteTarget
 	name, oldFile, err = svc.resolveNameConflict(name, ext, parentID, userID)
@@ -420,15 +463,15 @@ func (svc *FileService) createFileRecord(userID int64, parentID *int64, name str
 }
 
 func (svc *FileService) validateExtension(ext string) error {
-	if len(svc.cfg.Upload.AllowedExtensions) > 0 {
-		for _, allowed := range svc.cfg.Upload.AllowedExtensions {
+	if len(svc.getCfg().Upload.AllowedExtensions) > 0 {
+		for _, allowed := range svc.getCfg().Upload.AllowedExtensions {
 			if ext == strings.ToLower(allowed) {
 				return nil
 			}
 		}
 		return ErrExtensionBlocked
 	}
-	for _, blocked := range svc.cfg.Upload.BlockedExtensions {
+	for _, blocked := range svc.getCfg().Upload.BlockedExtensions {
 		if ext == strings.ToLower(blocked) {
 			return ErrExtensionBlocked
 		}
@@ -451,7 +494,7 @@ func (svc *FileService) resolveNameConflict(desiredName, ext string, parentID *i
 		return desiredName, nil, nil
 	}
 
-	switch svc.cfg.Upload.OnNameConflict {
+	switch svc.getCfg().Upload.OnNameConflict {
 	case "overwrite":
 		existing, err := svc.store.FileByName(parentID, userID, desiredName)
 		if err != nil {
@@ -463,14 +506,18 @@ func (svc *FileService) resolveNameConflict(desiredName, ext string, parentID *i
 		return desiredName, &overwriteTarget{ID: existing.ID, Size: existing.Size, IsDir: existing.IsDir}, nil
 	default:
 		base := strings.TrimSuffix(desiredName, ext)
-		for i := 1; i < 1000; i++ {
+		const maxRenames = 1000
+		for i := 1; i < maxRenames; i++ {
 			candidate := fmt.Sprintf("%s (%d)%s", base, i, ext)
-			exists, err := svc.store.FileNameExists(parentID, userID, candidate)
-			if err != nil || !exists {
+			dupExists, err := svc.store.FileNameExists(parentID, userID, candidate)
+			if err != nil {
+				return "", nil, fmt.Errorf("check name candidate: %w", err)
+			}
+			if !dupExists {
 				return candidate, nil, nil
 			}
 		}
-		return desiredName, nil, nil
+		return "", nil, ErrNameConflict
 	}
 }
 
@@ -674,12 +721,26 @@ func (svc *FileService) MoveFile(fileID int64, targetParentID *int64, userID int
 			return nil, err
 		}
 	}
+	f, err := svc.store.FileByID(fileID)
+	if err != nil {
+		return nil, fmt.Errorf("move lookup: %w", err)
+	}
+	if f.UserID != userID || f.IsDeleted {
+		return nil, ErrFileNotFound
+	}
+	if f.IsDir && targetParentID != nil {
+		if isDescendant, err := svc.isDescendantOf(*targetParentID, fileID); err != nil {
+			return nil, fmt.Errorf("move check cycle: %w", err)
+		} else if isDescendant {
+			return nil, fmt.Errorf("不能将目录移动到自身的子目录中")
+		}
+	}
 	tx, err := svc.store.BeginTx()
 	if err != nil {
 		return nil, fmt.Errorf("move begin tx: %w", err)
 	}
 	defer tx.Rollback()
-	f, err := tx.FileByID(fileID)
+	f, err = tx.FileByID(fileID)
 	if err != nil {
 		return nil, fmt.Errorf("move lookup: %w", err)
 	}
@@ -700,6 +761,22 @@ func (svc *FileService) MoveFile(fileID int64, targetParentID *int64, userID int
 		return nil, fmt.Errorf("move commit: %w", err)
 	}
 	return svc.store.FileByID(fileID)
+}
+
+func (svc *FileService) isDescendantOf(ancestorID, descendantID int64) (bool, error) {
+	if ancestorID == descendantID {
+		return true, nil
+	}
+	ids, err := svc.store.DescendantIDs(ancestorID, false)
+	if err != nil {
+		return false, err
+	}
+	for _, id := range ids {
+		if id == descendantID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (svc *FileService) CopyFile(fileID int64, targetParentID *int64, userID int64) (*model.File, error) {
@@ -728,13 +805,22 @@ func (svc *FileService) CopyFile(fileID int64, targetParentID *int64, userID int
 	if exists {
 		ext := filepath.Ext(name)
 		base := strings.TrimSuffix(name, ext)
-		for i := 1; i < 1000; i++ {
+		const maxRenames = 1000
+		resolved := false
+		for i := 1; i < maxRenames; i++ {
 			candidate := fmt.Sprintf("%s (%d)%s", base, i, ext)
 			dupExists, err := tx.FileNameExists(targetParentID, userID, candidate)
-			if err != nil || !dupExists {
+			if err != nil {
+				return nil, fmt.Errorf("copy check name candidate: %w", err)
+			}
+			if !dupExists {
 				name = candidate
+				resolved = true
 				break
 			}
+		}
+		if !resolved {
+			return nil, ErrNameConflict
 		}
 	}
 	newFile := &model.File{
@@ -855,6 +941,13 @@ func (svc *FileService) BatchMove(ids []int64, targetParentID *int64, userID int
 		}
 		if targetParentID != nil && *targetParentID == id {
 			return fmt.Errorf("文件 %d: 不能移动到自身", id)
+		}
+		if f.IsDir && targetParentID != nil {
+			if isDescendant, err := svc.isDescendantOf(*targetParentID, id); err != nil {
+				return fmt.Errorf("文件 %d: 循环检测失败: %w", id, err)
+			} else if isDescendant {
+				return fmt.Errorf("文件 %d: 不能将目录移动到自身的子目录中", id)
+			}
 		}
 		exists, err := tx.FileNameExists(targetParentID, userID, f.Name)
 		if err != nil {
@@ -992,23 +1085,31 @@ func (svc *FileService) CalibrateStorage(userID int64) error {
 }
 
 func (svc *FileService) CalibrateAllStorage() (int64, error) {
-	ids, err := svc.store.AllUserIDs()
-	if err != nil {
-		return 0, fmt.Errorf("calibrate all: %w", err)
-	}
+	const pageSize = 100
 	var fixed int64
-	for _, id := range ids {
-		if err := svc.CalibrateStorage(id); err != nil {
-			logging.Logger().Error("calibrate storage failed", "user_id", id, "error", err)
-			continue
+	offset := 0
+	for {
+		ids, err := svc.store.AllUserIDsPaginated(pageSize, offset)
+		if err != nil {
+			return fixed, fmt.Errorf("calibrate all: %w", err)
 		}
-		fixed++
+		if len(ids) == 0 {
+			break
+		}
+		for _, id := range ids {
+			if err := svc.CalibrateStorage(id); err != nil {
+				logging.Error(context.Background(), "file", "calibrate storage failed", "user_id", id, "error", err)
+				continue
+			}
+			fixed++
+		}
+		offset += pageSize
 	}
 	return fixed, nil
 }
 
 func (svc *FileService) AutoCleanRecycle() (int64, error) {
-	cutoff := time.Now().AddDate(0, 0, -svc.cfg.Storage.AutoCleanRecycleDays)
+	cutoff := time.Now().AddDate(0, 0, -svc.getCfg().Storage.AutoCleanRecycleDays)
 	candidates, err := svc.store.ExpiredRecycleCandidates(cutoff)
 	if err != nil {
 		return 0, fmt.Errorf("auto clean recycle: %w", err)
@@ -1035,13 +1136,13 @@ func (svc *FileService) AutoCleanRecycle() (int64, error) {
 		if c.IsDir {
 			descendants, err := svc.store.DescendantIDs(c.ID, true)
 			if err != nil {
-				logging.Logger().Error("auto clean collect descendants failed", "dir_id", c.ID, "error", err)
+				logging.Error(context.Background(), "file", "auto clean collect descendants failed", "dir_id", c.ID, "error", err)
 				continue
 			}
 			if len(descendants) > 0 {
 				children, err := svc.store.FilesByIDs(descendants)
 				if err != nil {
-					logging.Logger().Error("auto clean descendant lookup failed", "dir_id", c.ID, "error", err)
+					logging.Error(context.Background(), "file", "auto clean descendant lookup failed", "dir_id", c.ID, "error", err)
 					continue
 				}
 				for _, child := range children {
@@ -1088,10 +1189,10 @@ func (svc *FileService) AutoCleanRecycle() (int64, error) {
 	}
 	var cleaned int64
 	if err := svc.store.HardDeleteFiles(allIDs); err != nil {
-		logging.Logger().Error("auto clean recycle batch delete failed", "error", err)
+		logging.Error(context.Background(), "file", "auto clean recycle batch delete failed", "error", err)
 		for _, id := range allIDs {
 			if err := svc.store.HardDeleteFile(id); err != nil {
-				logging.Logger().Error("auto clean recycle single delete failed", "file_id", id, "error", err)
+				logging.Error(context.Background(), "file", "auto clean recycle single delete failed", "file_id", id, "error", err)
 			} else {
 				cleaned++
 			}
@@ -1109,7 +1210,7 @@ func (svc *FileService) AutoCleanRecycle() (int64, error) {
 	}
 	for userID, delta := range userDeltas {
 		if err := svc.store.UpdateUserStorageUsed(userID, delta); err != nil {
-			logging.Logger().Error("auto clean recycle storage update failed", "user_id", userID, "error", err)
+			logging.Error(context.Background(), "file", "auto clean recycle storage update failed", "user_id", userID, "error", err)
 		}
 	}
 	return cleaned, nil
@@ -1138,7 +1239,10 @@ func (svc *FileService) InitUpload(userID int64, parentID *int64, name string, t
 	if name == "" {
 		return nil, fmt.Errorf("缺少文件名")
 	}
-	if totalSize > svc.cfg.Storage.MaxFileSize {
+	if totalSize <= 0 {
+		return nil, fmt.Errorf("文件大小必须大于0")
+	}
+	if totalSize > svc.getCfg().Storage.MaxFileSize {
 		return nil, ErrFileTooLarge
 	}
 	if parentID != nil {
@@ -1150,7 +1254,7 @@ func (svc *FileService) InitUpload(userID int64, parentID *int64, name string, t
 	if err := svc.validateExtension(ext); err != nil {
 		return nil, err
 	}
-	chunkSize := svc.cfg.Storage.ChunkSize
+	chunkSize := svc.getCfg().Storage.ChunkSize
 	if chunkSize <= 0 {
 		chunkSize = 10 << 20
 	}
@@ -1251,6 +1355,7 @@ func (svc *FileService) CompleteUpload(uploadID string, userID int64) (*UploadRe
 		return nil, fmt.Errorf("check hash: %w", err)
 	}
 	if existingFile != nil {
+		svc.unlockHash(hash)
 		svc.cleanupUploadSession(uploadID)
 		ext := strings.ToLower(filepath.Ext(session.Name))
 		name, _, err := svc.resolveNameConflict(session.Name, ext, session.ParentID, session.UserID)
@@ -1277,6 +1382,7 @@ func (svc *FileService) CompleteUpload(uploadID string, userID int64) (*UploadRe
 		}
 		return &UploadResult{File: file, Duplicate: true}, nil
 	}
+	svc.unlockHash(hash)
 	ext := strings.ToLower(filepath.Ext(session.Name))
 	storageKey, err := generateStorageKey(ext)
 	if err != nil {
@@ -1337,7 +1443,7 @@ func (svc *FileService) UploadStatus(uploadID string, userID int64) (*uploadSess
 }
 
 func (svc *FileService) CleanStaleChunks() (int64, error) {
-	timeout := svc.cfg.ChunkCleanTimeoutDuration()
+	timeout := svc.getCfg().ChunkCleanTimeoutDuration()
 	cutoff := time.Now().Add(-timeout)
 	chunksDir := svc.fileStore.Path(filepath.Join("tmp", "chunks"))
 	entries, err := os.ReadDir(chunksDir)
@@ -1356,7 +1462,7 @@ func (svc *FileService) CleanStaleChunks() (int64, error) {
 		info, err := os.Stat(sessionPath)
 		if err != nil || info.ModTime().Before(cutoff) {
 			if err := os.RemoveAll(filepath.Join(chunksDir, e.Name())); err != nil {
-				logging.Logger().Error("clean stale chunks failed", "upload_id", e.Name(), "error", err)
+				logging.Error(context.Background(), "file", "clean stale chunks failed", "upload_id", e.Name(), "error", err)
 			} else {
 				cleaned++
 			}
@@ -1411,7 +1517,7 @@ func (svc *FileService) RecordAudit(userID int64, action, targetType string, tar
 		IP:         ip,
 	}
 	if err := svc.store.CreateAuditLog(log); err != nil {
-		logging.Logger().Error("record audit failed", "error", err)
+		logging.Error(context.Background(), "file", "record audit failed", "error", err)
 	}
 }
 
@@ -1420,7 +1526,7 @@ func (svc *FileService) AuditLogs(userID int64, action string, limit, offset int
 }
 
 func (svc *FileService) CleanExpiredAuditLogs() (int64, error) {
-	return svc.store.DeleteExpiredAuditLogs(svc.cfg.Log.AuditRetentionDays)
+	return svc.store.DeleteExpiredAuditLogs(svc.getCfg().Log.AuditRetentionDays)
 }
 
 func (svc *FileService) PreviewType(mimeType string) string {
@@ -1462,14 +1568,15 @@ func (svc *FileService) PreviewContent(fileID int64, userID int64) (*model.File,
 	}
 
 	diskPath := svc.fileStore.Path(f.StorageKey)
-	data, err := os.ReadFile(diskPath)
+	file, err := os.Open(diskPath)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("preview open: %w", err)
+	}
+	defer file.Close()
+	const maxPreviewSize = 2 << 20
+	data, err := io.ReadAll(io.LimitReader(file, maxPreviewSize))
 	if err != nil {
 		return nil, "", "", fmt.Errorf("preview read: %w", err)
-	}
-
-	const maxPreviewSize = 2 << 20
-	if len(data) > maxPreviewSize {
-		data = data[:maxPreviewSize]
 	}
 
 	previewType = "text"
@@ -1552,9 +1659,13 @@ func (svc *FileService) CreateTempLink(fileID int64, userID int64) (*model.TempD
 		Token:    token,
 		FileID:   fileID,
 		UserID:   userID,
-		ExpireAt: time.Now().Add(1 * time.Hour),
+		ExpireAt: time.Now().Add(svc.getCfg().TempLinkTTLDuration()),
 	}
 	return svc.store.CreateTempDownload(td)
+}
+
+func (svc *FileService) RecentFiles(userID int64, limit int) ([]*model.File, error) {
+	return svc.store.RecentFiles(userID, limit)
 }
 
 func generateStorageKey(ext string) (string, error) {

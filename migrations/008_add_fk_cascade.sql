@@ -3,7 +3,10 @@ SET @fk_shares_owner = (
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'shares'
     AND COLUMN_NAME = 'owner_id' AND REFERENCED_TABLE_NAME = 'users'
 );
-SET @sql_drop_shares = CONCAT('ALTER TABLE shares DROP FOREIGN KEY ', @fk_shares_owner);
+SET @sql_drop_shares = IF(@fk_shares_owner IS NOT NULL,
+    CONCAT('ALTER TABLE shares DROP FOREIGN KEY ', @fk_shares_owner),
+    'SELECT 1'
+);
 PREPARE stmt_shares_drop FROM @sql_drop_shares;
 EXECUTE stmt_shares_drop;
 DEALLOCATE PREPARE stmt_shares_drop;
@@ -14,7 +17,10 @@ SET @fk_td_user = (
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'temp_downloads'
     AND COLUMN_NAME = 'user_id' AND REFERENCED_TABLE_NAME = 'users'
 );
-SET @sql_drop_td = CONCAT('ALTER TABLE temp_downloads DROP FOREIGN KEY ', @fk_td_user);
+SET @sql_drop_td = IF(@fk_td_user IS NOT NULL,
+    CONCAT('ALTER TABLE temp_downloads DROP FOREIGN KEY ', @fk_td_user),
+    'SELECT 1'
+);
 PREPARE stmt_td_drop FROM @sql_drop_td;
 EXECUTE stmt_td_drop;
 DEALLOCATE PREPARE stmt_td_drop;

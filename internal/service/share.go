@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -26,7 +27,7 @@ const shareVerifyTokenTTL = 5 * time.Minute
 type ShareService struct {
 	store           *store.Store
 	fileSvc         *FileService
-	cfg             *config.Config
+	cfg             atomic.Value
 	mu              sync.Mutex
 	passwordLimiter map[string]*passwordAttempts
 }
@@ -45,12 +46,17 @@ var (
 )
 
 func NewShareService(s *store.Store, fs *FileService, cfg *config.Config) *ShareService {
-	return &ShareService{
+	svc := &ShareService{
 		store:           s,
 		fileSvc:         fs,
-		cfg:             cfg,
 		passwordLimiter: make(map[string]*passwordAttempts),
 	}
+	svc.cfg.Store(cfg)
+	return svc
+}
+
+func (svc *ShareService) getCfg() *config.Config {
+	return svc.cfg.Load().(*config.Config)
 }
 
 func (svc *ShareService) CreateShare(fileID int64, ownerID int64, password string, expireAt *time.Time, maxDownloads int) (*model.Share, error) {
@@ -75,15 +81,15 @@ func (svc *ShareService) CreateShare(fileID int64, ownerID int64, password strin
 
 	var passwordHash string
 	if password != "" {
-		hash, err := bcrypt.GenerateFromPassword([]byte(password), svc.cfg.Auth.BcryptCost)
+		hash, err := bcrypt.GenerateFromPassword([]byte(password), svc.getCfg().ShareBcryptCost())
 		if err != nil {
 			return nil, fmt.Errorf("hash password: %w", err)
 		}
 		passwordHash = string(hash)
 	}
 
-	if expireAt == nil && svc.cfg.Share.DefaultExpire != "" {
-		d, err := parseShareDuration(svc.cfg.Share.DefaultExpire)
+	if expireAt == nil && svc.getCfg().Share.DefaultExpire != "" {
+		d, err := parseShareDuration(svc.getCfg().Share.DefaultExpire)
 		if err == nil && d > 0 {
 			t := time.Now().Add(d)
 			expireAt = &t
@@ -118,7 +124,7 @@ func parseShareDuration(s string) (time.Duration, error) {
 }
 
 func (svc *ShareService) UpdateConfig(cfg *config.Config) {
-	svc.cfg = cfg
+	svc.cfg.Store(cfg)
 }
 
 func (svc *ShareService) MyShares(ownerID int64) ([]*model.Share, error) {
@@ -171,7 +177,7 @@ func (svc *ShareService) VerifySharePassword(token string, password string, clie
 	attempts, exists := svc.passwordLimiter[clientIP]
 	now := time.Now()
 	if !exists || now.After(attempts.resetAt) {
-		attempts = &passwordAttempts{resetAt: now.Add(15 * time.Minute)}
+		attempts = &passwordAttempts{resetAt: now.Add(svc.getCfg().SharePasswordRateLimitResetDuration())}
 		svc.passwordLimiter[clientIP] = attempts
 	}
 	if exists && attempts.count >= maxAttempts && !now.After(attempts.resetAt) {
@@ -195,9 +201,6 @@ func (svc *ShareService) VerifySharePassword(token string, password string, clie
 		return nil, "", ErrSharePassword
 	}
 	svc.resetPasswordLimiter(clientIP)
-	if err := svc.store.IncrementShareViewCountIfUnderMax(share.ID, share.MaxDownloads); err != nil {
-		return nil, "", ErrShareMaxReached
-	}
 	verifyToken, err := svc.signVerifyToken(token)
 	if err != nil {
 		return nil, "", fmt.Errorf("sign verify token: %w", err)
@@ -237,7 +240,7 @@ func (svc *ShareService) DownloadWithVerifyToken(token string, verifyToken strin
 	if share.ExpireAt != nil && time.Now().After(*share.ExpireAt) {
 		return nil, ErrShareExpired
 	}
-	if share.MaxDownloads > 0 && share.ViewCount >= share.MaxDownloads {
+	if err := svc.store.IncrementShareViewCountIfUnderMax(share.ID, share.MaxDownloads); err != nil {
 		return nil, ErrShareMaxReached
 	}
 	f, err := svc.store.FileByID(share.FileID)
@@ -257,7 +260,7 @@ func (svc *ShareService) signVerifyToken(shareToken string) (string, error) {
 	expiry := time.Now().Add(shareVerifyTokenTTL).Unix()
 	expiryStr := strconv.FormatInt(expiry, 10)
 	payload := expiryStr + "|" + shareToken
-	mac := hmac.New(sha256.New, []byte(svc.cfg.Auth.JWTSecret))
+	mac := hmac.New(sha256.New, []byte(svc.getCfg().Auth.JWTSecret))
 	mac.Write([]byte(payload))
 	sig := hex.EncodeToString(mac.Sum(nil))
 	encoded := base64.RawURLEncoding.EncodeToString([]byte(expiryStr + "|" + shareToken + "|" + sig))
@@ -284,7 +287,7 @@ func (svc *ShareService) validateVerifyToken(shareToken string, verifyToken stri
 		return fmt.Errorf("验证令牌不匹配")
 	}
 	payload := parts[0] + "|" + parts[1]
-	mac := hmac.New(sha256.New, []byte(svc.cfg.Auth.JWTSecret))
+	mac := hmac.New(sha256.New, []byte(svc.getCfg().Auth.JWTSecret))
 	mac.Write([]byte(payload))
 	expectedSig := hex.EncodeToString(mac.Sum(nil))
 	if !hmac.Equal([]byte(parts[2]), []byte(expectedSig)) {

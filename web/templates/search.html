@@ -1,0 +1,124 @@
+{{template "base.html" .}}
+{{define "title"}}搜索 - NetworkDisk{{end}}
+{{define "nav-right"}}
+<span id="navUsername" style="font-size:14px;color:var(--text-secondary);"></span>
+<button onclick="handleLogout()" style="font-size:14px;color:var(--text);text-decoration:none;background:none;border:none;cursor:pointer;padding:6px 12px;border-radius:6px;">退出</button>
+<button id="themeToggle" class="theme-toggle" onclick="toggleTheme()">🌙</button>
+{{end}}
+{{define "sidebar"}}
+<a href="/dashboard">仪表盘</a>
+<a href="/">文件</a>
+<a href="/search" style="font-weight:600;">搜索</a>
+<a href="/recycle">回收站</a>
+<a href="/shares">共享</a>
+{{end}}
+{{define "content"}}
+<div>
+    <h2 style="margin-bottom:20px;">搜索文件</h2>
+    <div style="position:relative;margin-bottom:16px;">
+        <input type="text" id="searchInput" placeholder="输入文件名关键词搜索..." style="width:100%;max-width:480px;padding:10px 14px;border:1px solid var(--border);border-radius:8px;font-size:14px;background:var(--surface);color:var(--text);" autocomplete="off">
+        <div id="searchSuggestions" style="display:none;position:absolute;top:44px;left:0;width:480px;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.15);z-index:50;max-height:240px;overflow-y:auto;"></div>
+    </div>
+    <div id="searchResults" class="card" style="padding:0;">
+        <table style="width:100%;border-collapse:collapse;">
+            <thead><tr style="border-bottom:1px solid var(--border);"><th style="padding:10px 16px;text-align:left;font-size:13px;font-weight:500;color:var(--text-secondary);">名称</th><th style="padding:10px 16px;text-align:right;font-size:13px;font-weight:500;color:var(--text-secondary);">大小</th><th style="padding:10px 16px;text-align:right;font-size:13px;font-weight:500;color:var(--text-secondary);">操作</th></tr></thead>
+            <tbody id="searchFileList"><tr><td colspan="3" style="padding:32px;text-align:center;color:var(--text-secondary);">输入关键词开始搜索</td></tr></tbody>
+        </table>
+    </div>
+</div>
+{{end}}
+{{define "scripts"}}
+<script>
+var searchTimer = null;
+
+(function() {
+    var token = localStorage.getItem('access_token');
+    if (!token) { window.location.replace('/login'); return; }
+    apiFetch('/api/auth/me', {}).then(function(r) {
+        if (!r.ok) { localStorage.removeItem('access_token'); window.location.replace('/login'); return; }
+        return r.json();
+    }).then(function(data) {
+        if (data && data.username) {
+            var el = document.getElementById('navUsername');
+            if (el) el.textContent = data.username;
+        }
+    }).catch(function() {
+        localStorage.removeItem('access_token');
+        window.location.replace('/login');
+    });
+    document.getElementById('searchInput').addEventListener('input', function() {
+        var q = this.value.trim();
+        clearTimeout(searchTimer);
+        if (q.length < 2) {
+            document.getElementById('searchSuggestions').style.display = 'none';
+            return;
+        }
+        searchTimer = setTimeout(function() { doSuggest(q); }, 300);
+    });
+    document.getElementById('searchInput').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+            var q = this.value.trim();
+            if (q.length >= 1) doSearch(q);
+            document.getElementById('searchSuggestions').style.display = 'none';
+        }
+    });
+    document.addEventListener('click', function(e) {
+        if (!document.getElementById('searchSuggestions').contains(e.target) && e.target !== document.getElementById('searchInput')) {
+            document.getElementById('searchSuggestions').style.display = 'none';
+        }
+    });
+})();
+
+function doSuggest(q) {
+    apiFetch('/api/search/suggest?q=' + encodeURIComponent(q), {}).then(function(r) {
+        if (!r.ok) return;
+        return r.json();
+    }).then(function(data) {
+        var suggestions = data.suggestions || [];
+        var div = document.getElementById('searchSuggestions');
+        if (suggestions.length === 0) {
+            div.style.display = 'none';
+            return;
+        }
+        var html = '';
+        for (var i = 0; i < suggestions.length; i++) {
+            html += '<div style="padding:8px 14px;cursor:pointer;font-size:14px;color:var(--text);" onmouseover="this.style.background=\'var(--border)\'" onmouseout="this.style.background=\'transparent\'" onclick="document.getElementById(\'searchInput\').value=\'' + escapeJsAttr(suggestions[i]) + '\';document.getElementById(\'searchSuggestions\').style.display=\'none\';doSearch(\'' + escapeJsAttr(suggestions[i]) + '\');">' + escapeHtml(suggestions[i]) + '</div>';
+        }
+        div.innerHTML = html;
+        div.style.display = 'block';
+    });
+}
+
+function doSearch(q) {
+    document.getElementById('searchSuggestions').style.display = 'none';
+    document.getElementById('searchFileList').innerHTML = '<tr><td colspan="3" style="padding:32px;text-align:center;color:var(--text-secondary);">搜索中...</td></tr>';
+    apiFetch('/api/search?q=' + encodeURIComponent(q), {}).then(function(r) {
+        if (!r.ok) throw new Error('failed');
+        return r.json();
+    }).then(function(data) {
+        var files = data.files || [];
+        var tbody = document.getElementById('searchFileList');
+        if (files.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="3" style="padding:32px;text-align:center;color:var(--text-secondary);">未找到匹配的文件</td></tr>';
+            return;
+        }
+        var html = '';
+        for (var i = 0; i < files.length; i++) {
+            var f = files[i];
+            var icon = f.is_dir ? '📁' : '📄';
+            html += '<tr style="border-bottom:1px solid var(--border);">';
+            html += '<td style="padding:10px 16px;">' + icon + ' ' + escapeHtml(f.name) + '</td>';
+            html += '<td style="padding:10px 16px;text-align:right;font-size:13px;color:var(--text-secondary);">' + (f.is_dir ? '-' : formatSize(f.size)) + '</td>';
+            html += '<td style="padding:10px 16px;text-align:right;">';
+            if (!f.is_dir) {
+                html += '<button onclick="downloadFile(' + f.id + ',\'' + escapeJsAttr(f.name) + '\')" style="font-size:12px;background:none;border:1px solid var(--border);border-radius:4px;padding:3px 8px;cursor:pointer;color:var(--text);">下载</button>';
+            }
+            html += '</td></tr>';
+        }
+        tbody.innerHTML = html;
+    }).catch(function() {
+        document.getElementById('searchFileList').innerHTML = '<tr><td colspan="3" style="padding:32px;text-align:center;color:var(--danger);">搜索失败</td></tr>';
+    });
+}
+</script>
+{{end}}

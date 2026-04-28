@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"networkdisk/internal/logging"
 	"networkdisk/internal/service"
 )
 
@@ -23,6 +24,7 @@ func (h *SystemHandler) StorageStats(w http.ResponseWriter, r *http.Request) {
 	}
 	active, recycle, used, err := h.fileSvc.StorageStats(userID)
 	if err != nil {
+		logging.Error(r.Context(), "system", "storage stats failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
@@ -51,6 +53,7 @@ func (h *SystemHandler) AuditLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	logs, err := h.fileSvc.AuditLogs(userID, action, limit, offset)
 	if err != nil {
+		logging.Error(r.Context(), "system", "audit logs failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}

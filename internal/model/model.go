@@ -3,12 +3,26 @@ package model
 import "time"
 
 type User struct {
-	ID           int64  `json:"id"`
-	Username     string `json:"username"`
-	PasswordHash string `json:"-"`
-	StorageUsed  int64  `json:"storage_used"`
+	ID           int64     `json:"id"`
+	Username     string    `json:"username"`
+	PasswordHash string    `json:"-"`
+	StorageUsed  int64     `json:"storage_used"`
+	TOTPSecret   string    `json:"-"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+type Tag struct {
+	ID        int64     `json:"id"`
+	UserID    int64     `json:"user_id"`
+	Name      string    `json:"name"`
+	Color     string    `json:"color"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type FileTag struct {
+	FileID int64 `json:"file_id"`
+	TagID  int64 `json:"tag_id"`
 }
 
 type RefreshToken struct {

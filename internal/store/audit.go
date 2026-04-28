@@ -25,6 +25,12 @@ func (s *Store) CreateAuditLog(log *model.AuditLog) error {
 	return nil
 }
 
+var validAuditActions = map[string]bool{
+	"upload": true, "download": true, "delete": true, "permanent_delete": true,
+	"share_create": true, "share_delete": true, "share_download": true, "share_verify": true,
+	"register": true, "login": true, "totp_enable": true, "totp_disable": true,
+}
+
 func (s *Store) AuditLogsByUser(userID int64, action string, limit, offset int) ([]*model.AuditLog, error) {
 	if userID <= 0 {
 		return nil, fmt.Errorf("audit logs by user: user id must be positive")
@@ -38,8 +44,12 @@ func (s *Store) AuditLogsByUser(userID int64, action string, limit, offset int) 
 	query := "SELECT id, user_id, action, target_type, target_id, detail, ip, created_at FROM audit_logs WHERE user_id = ?"
 	args := []interface{}{userID}
 	if action != "" {
-		query += " AND action = ?"
-		args = append(args, action)
+		if !validAuditActions[action] {
+			action = ""
+		} else {
+			query += " AND action = ?"
+			args = append(args, action)
+		}
 	}
 	query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
 	args = append(args, limit, offset)

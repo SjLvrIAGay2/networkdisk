@@ -95,7 +95,7 @@ func RateLimit(limit int, window time.Duration) (func(http.Handler) http.Handler
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			host := ClientIP(r)
 			if !rl.Allow(host) {
-				logging.Logger().Warn("rate limited", "remote", host, "path", r.URL.Path)
+				logging.Warn(r.Context(), "ratelimit", "rate limited", "remote", host, "path", r.URL.Path)
 				http.Error(w, `{"error":"请求过于频繁，请稍后重试"}`, http.StatusTooManyRequests)
 				return
 			}

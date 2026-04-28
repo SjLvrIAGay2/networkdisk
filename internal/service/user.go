@@ -7,9 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/pquerna/otp/totp"
 	"golang.org/x/crypto/bcrypt"
 
 	"networkdisk/internal/config"
@@ -18,8 +21,21 @@ import (
 )
 
 type UserService struct {
-	store  *store.Store
-	config *config.Config
+	store        *store.Store
+	config       atomic.Value
+	pendingTOTP  map[int64]string
+	pendingMu    sync.Mutex
+	totpAttempts map[int64]totpAttempt
+	totpMu       sync.Mutex
+}
+
+type totpAttempt struct {
+	count   int
+	resetAt time.Time
+}
+
+func (svc *UserService) getCfg() *config.Config {
+	return svc.config.Load().(*config.Config)
 }
 
 var (
@@ -27,14 +43,22 @@ var (
 	ErrInvalidCredentials = errors.New("用户名或密码错误")
 	ErrTokenRevoked       = errors.New("刷新令牌已吊销")
 	ErrTokenExpired       = errors.New("刷新令牌已过期")
+	ErrTOTPRequired       = errors.New("需要两步验证码")
+	ErrInvalidTOTP        = errors.New("两步验证码无效")
 )
 
 func NewUserService(s *store.Store, cfg *config.Config) *UserService {
-	return &UserService{store: s, config: cfg}
+	svc := &UserService{
+		store:        s,
+		pendingTOTP:  make(map[int64]string),
+		totpAttempts: make(map[int64]totpAttempt),
+	}
+	svc.config.Store(cfg)
+	return svc
 }
 
 func (svc *UserService) UpdateConfig(cfg *config.Config) {
-	svc.config = cfg
+	svc.config.Store(cfg)
 }
 
 type RegisterInput struct {
@@ -50,7 +74,7 @@ func (svc *UserService) Register(in RegisterInput) (*model.User, error) {
 	if len(in.Password) < 6 {
 		return nil, fmt.Errorf("密码长度不能少于6个字符")
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), svc.config.Auth.BcryptCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), svc.getCfg().Auth.BcryptCost)
 	if err != nil {
 		return nil, fmt.Errorf("hash password: %w", err)
 	}
@@ -67,6 +91,7 @@ func (svc *UserService) Register(in RegisterInput) (*model.User, error) {
 type LoginInput struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
+	TOTPCode string `json:"totp_code"`
 }
 
 type TokenPair struct {
@@ -84,6 +109,14 @@ func (svc *UserService) Login(in LoginInput) (*model.User, *TokenPair, error) {
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(in.Password)); err != nil {
 		return nil, nil, ErrInvalidCredentials
+	}
+	if user.TOTPSecret != "" {
+		if in.TOTPCode == "" {
+			return user, nil, ErrTOTPRequired
+		}
+		if !totp.Validate(in.TOTPCode, user.TOTPSecret) {
+			return nil, nil, ErrInvalidTOTP
+		}
 	}
 	tokens, err := svc.issueTokens(user)
 	if err != nil {
@@ -128,7 +161,7 @@ func (svc *UserService) RefreshAccessToken(refreshToken string) (*model.User, *T
 		return nil, nil, fmt.Errorf("generate refresh token: %w", err)
 	}
 	newTokenHash := hashToken(newRefreshToken)
-	_, err = tx.CreateRefreshToken(user.ID, newTokenHash, rt.FamilyID, time.Now().Add(svc.config.RefreshExpireDuration()))
+	_, err = tx.CreateRefreshToken(user.ID, newTokenHash, rt.FamilyID, time.Now().Add(svc.getCfg().RefreshExpireDuration()))
 	if err != nil {
 		return nil, nil, fmt.Errorf("store refresh token: %w", err)
 	}
@@ -177,14 +210,22 @@ func (svc *UserService) ChangePassword(userID int64, oldPassword, newPassword st
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(oldPassword)); err != nil {
 		return ErrInvalidCredentials
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), svc.config.Auth.BcryptCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), svc.getCfg().Auth.BcryptCost)
 	if err != nil {
 		return fmt.Errorf("hash password: %w", err)
 	}
-	if err := svc.store.UpdateUserPassword(userID, string(hash)); err != nil {
+	tx, err := svc.store.BeginTx()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	if err := tx.UpdateUserPassword(userID, string(hash)); err != nil {
 		return fmt.Errorf("update password: %w", err)
 	}
-	return nil
+	if err := tx.RevokeUserTokens(userID); err != nil {
+		return fmt.Errorf("revoke user tokens: %w", err)
+	}
+	return tx.Commit()
 }
 
 func (svc *UserService) UserByID(id int64) (*model.User, error) {
@@ -202,7 +243,7 @@ func (svc *UserService) issueTokens(user *model.User) (*TokenPair, error) {
 	}
 	tokenHash := hashToken(refreshToken)
 	familyID := refreshToken[:36]
-	_, err = svc.store.CreateRefreshToken(user.ID, tokenHash, familyID, time.Now().Add(svc.config.RefreshExpireDuration()))
+	_, err = svc.store.CreateRefreshToken(user.ID, tokenHash, familyID, time.Now().Add(svc.getCfg().RefreshExpireDuration()))
 	if err != nil {
 		return nil, err
 	}
@@ -220,7 +261,7 @@ func (svc *UserService) issueTokens(user *model.User) (*TokenPair, error) {
 
 func (svc *UserService) generateAccessToken(user *model.User) (string, time.Time, error) {
 	now := time.Now()
-	expiresAt := now.Add(svc.config.JWTExpireDuration())
+	expiresAt := now.Add(svc.getCfg().JWTExpireDuration())
 	claims := jwt.MapClaims{
 		"iss": "networkdisk",
 		"aud": "networkdisk",
@@ -230,11 +271,118 @@ func (svc *UserService) generateAccessToken(user *model.User) (string, time.Time
 		"exp": expiresAt.Unix(),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signed, err := token.SignedString([]byte(svc.config.Auth.JWTSecret))
+	signed, err := token.SignedString([]byte(svc.getCfg().Auth.JWTSecret))
 	if err != nil {
 		return "", time.Time{}, err
 	}
 	return signed, expiresAt, nil
+}
+
+func (svc *UserService) GenerateTOTP(userID int64) (string, string, error) {
+	user, err := svc.store.UserByID(userID)
+	if err != nil {
+		return "", "", fmt.Errorf("generate totp: %w", err)
+	}
+	if user.TOTPSecret != "" {
+		return "", "", fmt.Errorf("两步验证已开启")
+	}
+	key, err := totp.Generate(totp.GenerateOpts{
+		Issuer:      svc.getCfg().Auth.TOTPIssuer,
+		AccountName: user.Username,
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("generate totp key: %w", err)
+	}
+	svc.pendingMu.Lock()
+	svc.pendingTOTP[userID] = key.Secret()
+	svc.pendingMu.Unlock()
+	return key.Secret(), key.URL(), nil
+}
+
+func (svc *UserService) EnableTOTP(userID int64, code string) error {
+	if err := svc.checkTOTPRateLimit(userID); err != nil {
+		return err
+	}
+	svc.pendingMu.Lock()
+	secret, ok := svc.pendingTOTP[userID]
+	delete(svc.pendingTOTP, userID)
+	svc.pendingMu.Unlock()
+	if !ok || secret == "" {
+		return fmt.Errorf("请先获取两步验证密钥")
+	}
+	if !totp.Validate(code, secret) {
+		svc.recordTOTPAttempt(userID)
+		return fmt.Errorf("验证码无效，请确认扫描了正确的二维码")
+	}
+	svc.resetTOTPAttempts(userID)
+	return svc.store.SetTOTPSecret(userID, secret)
+}
+
+func (svc *UserService) DisableTOTP(userID int64, code string) error {
+	if err := svc.checkTOTPRateLimit(userID); err != nil {
+		return err
+	}
+	secret, err := svc.store.UserTOTPSecret(userID)
+	if err != nil {
+		return fmt.Errorf("disable totp: %w", err)
+	}
+	if secret == "" {
+		return fmt.Errorf("两步验证未开启")
+	}
+	if !totp.Validate(code, secret) {
+		svc.recordTOTPAttempt(userID)
+		return fmt.Errorf("验证码无效")
+	}
+	svc.resetTOTPAttempts(userID)
+	return svc.store.SetTOTPSecret(userID, "")
+}
+
+const maxTOTPAttempts = 5
+const totpRateLimitReset = 15 * time.Minute
+
+func (svc *UserService) checkTOTPRateLimit(userID int64) error {
+	svc.totpMu.Lock()
+	defer svc.totpMu.Unlock()
+	attempt, exists := svc.totpAttempts[userID]
+	now := time.Now()
+	if exists && attempt.count >= maxTOTPAttempts && !now.After(attempt.resetAt) {
+		return fmt.Errorf("尝试次数过多，请15分钟后再试")
+	}
+	if !exists || now.After(attempt.resetAt) {
+		svc.totpAttempts[userID] = totpAttempt{resetAt: now.Add(totpRateLimitReset)}
+	}
+	return nil
+}
+
+func (svc *UserService) recordTOTPAttempt(userID int64) {
+	svc.totpMu.Lock()
+	defer svc.totpMu.Unlock()
+	attempt := svc.totpAttempts[userID]
+	attempt.count++
+	svc.totpAttempts[userID] = attempt
+}
+
+func (svc *UserService) resetTOTPAttempts(userID int64) {
+	svc.totpMu.Lock()
+	delete(svc.totpAttempts, userID)
+	svc.totpMu.Unlock()
+}
+
+func (svc *UserService) VerifyLoginTOTP(userID int64, code string) error {
+	secret, err := svc.store.UserTOTPSecret(userID)
+	if err != nil {
+		return fmt.Errorf("verify login totp: %w", err)
+	}
+	if secret == "" {
+		return nil
+	}
+	if code == "" {
+		return fmt.Errorf("需要两步验证码")
+	}
+	if !totp.Validate(code, secret) {
+		return fmt.Errorf("两步验证码无效")
+	}
+	return nil
 }
 
 func generateToken() (string, error) {

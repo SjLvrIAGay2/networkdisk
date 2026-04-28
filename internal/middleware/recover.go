@@ -12,7 +12,7 @@ func Recover() func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				if rec := recover(); rec != nil {
-					logging.Logger().Error("panic recovered",
+					logging.Error(r.Context(), "panic", "panic recovered",
 						"panic", rec,
 						"stack", string(debug.Stack()),
 						"path", r.URL.Path,

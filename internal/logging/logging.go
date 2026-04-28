@@ -1,12 +1,15 @@
 package logging
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
+	"time"
 
 	"networkdisk/internal/config"
 )
@@ -52,6 +55,46 @@ func Logger() *slog.Logger {
 	mu.RLock()
 	defer mu.RUnlock()
 	return global
+}
+
+func Info(ctx context.Context, typ string, msg string, args ...any) {
+	logMsg(ctx, slog.LevelInfo, typ, msg, args)
+}
+
+func Warn(ctx context.Context, typ string, msg string, args ...any) {
+	logMsg(ctx, slog.LevelWarn, typ, msg, args)
+}
+
+func Error(ctx context.Context, typ string, msg string, args ...any) {
+	logMsg(ctx, slog.LevelError, typ, msg, args)
+}
+
+func Debug(ctx context.Context, typ string, msg string, args ...any) {
+	logMsg(ctx, slog.LevelDebug, typ, msg, args)
+}
+
+func logMsg(ctx context.Context, level slog.Level, typ string, msg string, args []any) {
+	mu.RLock()
+	l := global
+	mu.RUnlock()
+	if l == nil {
+		return
+	}
+	if !l.Enabled(ctx, level) {
+		return
+	}
+	var pcs [1]uintptr
+	runtime.Callers(3, pcs[:])
+	r := slog.NewRecord(time.Now(), level, msg, pcs[0])
+	traceID := TraceID(ctx)
+	if traceID != "" {
+		r.AddAttrs(slog.String("__trace_id__", traceID))
+	}
+	if typ != "" {
+		r.AddAttrs(slog.String("__type__", typ))
+	}
+	r.Add(args...)
+	_ = l.Handler().Handle(ctx, r)
 }
 
 func parseLevel(s string) slog.Level {

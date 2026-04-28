@@ -1,0 +1,121 @@
+{{template "base.html" .}}
+{{define "title"}}仪表盘 - NetworkDisk{{end}}
+{{define "nav-right"}}
+<span id="navUsername" style="font-size:14px;color:var(--text-secondary);"></span>
+<button onclick="handleLogout()" style="font-size:14px;color:var(--text);text-decoration:none;background:none;border:none;cursor:pointer;padding:6px 12px;border-radius:6px;">退出</button>
+<button id="themeToggle" class="theme-toggle" onclick="toggleTheme()">🌙</button>
+{{end}}
+{{define "sidebar"}}
+<a href="/dashboard" style="font-weight:600;">仪表盘</a>
+<a href="/">文件</a>
+<a href="/search">搜索</a>
+<a href="/recycle">回收站</a>
+<a href="/shares">共享</a>
+{{end}}
+{{define "content"}}
+<div>
+    <h2 style="margin-bottom:20px;">仪表盘</h2>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:24px;">
+        <div class="card">
+            <div style="font-size:13px;color:var(--text-secondary);">活跃文件存储</div>
+            <div style="font-size:28px;font-weight:600;margin-top:8px;" id="statActive">-</div>
+        </div>
+        <div class="card">
+            <div style="font-size:13px;color:var(--text-secondary);">回收站占用</div>
+            <div style="font-size:28px;font-weight:600;margin-top:8px;" id="statRecycle">-</div>
+        </div>
+        <div class="card">
+            <div style="font-size:13px;color:var(--text-secondary);">已用配额</div>
+            <div style="font-size:28px;font-weight:600;margin-top:8px;" id="statUsed">-</div>
+        </div>
+    </div>
+    <div class="card">
+        <h3 style="margin-bottom:16px;">最近文件</h3>
+        <table style="width:100%;border-collapse:collapse;">
+            <thead>
+                <tr style="border-bottom:1px solid var(--border);">
+                    <th style="padding:8px 12px;text-align:left;font-size:13px;font-weight:500;color:var(--text-secondary);">名称</th>
+                    <th style="padding:8px 12px;text-align:right;font-size:13px;font-weight:500;color:var(--text-secondary);">大小</th>
+                    <th style="padding:8px 12px;text-align:right;font-size:13px;font-weight:500;color:var(--text-secondary);">时间</th>
+                </tr>
+            </thead>
+            <tbody id="recentFiles">
+                <tr><td colspan="3" style="padding:16px;text-align:center;color:var(--text-secondary);">加载中...</td></tr>
+            </tbody>
+        </table>
+    </div>
+    <div style="margin-top:16px;">
+        <label class="btn btn-primary" style="cursor:pointer;">
+            快速上传
+            <input type="file" id="quickUploadInput" style="display:none" onchange="handleQuickUpload(this)">
+        </label>
+    </div>
+</div>
+{{end}}
+{{define "scripts"}}
+<script>
+(function() {
+    var token = localStorage.getItem('access_token');
+    if (!token) { window.location.replace('/login'); return; }
+    apiFetch('/api/auth/me', {}).then(function(r) {
+        if (!r.ok) { localStorage.removeItem('access_token'); window.location.replace('/login'); return; }
+        return r.json();
+    }).then(function(data) {
+        if (data && data.username) {
+            var el = document.getElementById('navUsername');
+            if (el) el.textContent = data.username;
+        }
+    }).catch(function() {
+        localStorage.removeItem('access_token');
+        window.location.replace('/login');
+    });
+    loadDashboard();
+})();
+
+function loadDashboard() {
+    apiFetch('/api/files/dashboard', {}).then(function(r) {
+        if (!r.ok) throw new Error('failed');
+        return r.json();
+    }).then(function(data) {
+        document.getElementById('statActive').textContent = formatSize(data.active_storage || 0);
+        document.getElementById('statRecycle').textContent = formatSize(data.recycle_storage || 0);
+        document.getElementById('statUsed').textContent = formatSize(data.used_storage || 0);
+        var files = data.recent_files || [];
+        var tbody = document.getElementById('recentFiles');
+        if (files.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="3" style="padding:16px;text-align:center;color:var(--text-secondary);">暂无文件</td></tr>';
+            return;
+        }
+        var html = '';
+        for (var i = 0; i < files.length; i++) {
+            var f = files[i];
+            var d = f.created_at ? f.created_at.substring(0, 10) : '';
+            html += '<tr style="border-bottom:1px solid var(--border);">';
+            html += '<td style="padding:8px 12px;">' + escapeHtml(f.name) + '</td>';
+            html += '<td style="padding:8px 12px;text-align:right;font-size:13px;color:var(--text-secondary);">' + (f.is_dir ? '-' : formatSize(f.size)) + '</td>';
+            html += '<td style="padding:8px 12px;text-align:right;font-size:13px;color:var(--text-secondary);">' + d + '</td>';
+            html += '</tr>';
+        }
+        tbody.innerHTML = html;
+    }).catch(function() {
+        document.getElementById('recentFiles').innerHTML = '<tr><td colspan="3" style="padding:16px;text-align:center;color:var(--danger);">加载失败</td></tr>';
+    });
+}
+
+function handleQuickUpload(input) {
+    var file = input.files[0];
+    if (!file) return;
+    var form = new FormData();
+    form.append('file', file);
+    apiFetch('/api/files/upload', {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': getCSRFToken() },
+        body: form
+    }).then(function(r) {
+        if (r.ok) { loadDashboard(); }
+        else { r.json().then(function(d) { alert(d.error || '上传失败'); }); }
+    }).catch(function() { alert('上传失败'); });
+    input.value = '';
+}
+</script>
+{{end}}

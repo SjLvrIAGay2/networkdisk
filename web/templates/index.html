@@ -6,7 +6,9 @@
 <button id="themeToggle" class="theme-toggle" onclick="toggleTheme()">🌙</button>
 {{end}}
 {{define "sidebar"}}
+<a href="/dashboard">仪表盘</a>
 <a href="/">文件</a>
+<a href="/search">搜索</a>
 <a href="/recycle">回收站</a>
 <a href="/shares">共享</a>
 {{end}}
@@ -144,10 +146,6 @@ function refreshFiles() {
     });
 }
 
-function escapeJsAttr(str) {
-    return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
-}
-
 function renderFiles(files) {
     var tbody = document.getElementById('fileList');
     if (!files || files.length === 0) {
@@ -163,8 +161,8 @@ function renderFiles(files) {
             : '<a href="#" onclick="downloadFile(' + f.id + ',\'' + escapeJsAttr(f.name) + '\');return false;" style="color:var(--text);text-decoration:none;">' + icon + ' ' + escapeHtml(f.name) + '</a>';
         var sizeStr = f.is_dir ? '-' : formatSize(f.size);
         var shareBtn = f.is_dir ? '' : '<button onclick="showCreateShareModal(' + f.id + ')" style="font-size:12px;margin-right:4px;background:none;border:1px solid var(--primary);border-radius:4px;padding:3px 8px;cursor:pointer;color:var(--primary);">分享</button>';
-        html += '<tr style="border-bottom:1px solid var(--border);">';
-        html += '<td style="padding:10px 16px;">' + nameHtml + '</td>';
+        html += '<tr style="border-bottom:1px solid var(--border);" data-file-id="' + f.id + '">';
+        html += '<td class="file-name" style="padding:10px 16px;">' + nameHtml + '</td>';
         html += '<td style="padding:10px 16px;text-align:right;font-size:13px;color:var(--text-secondary);">' + sizeStr + '</td>';
         html += '<td style="padding:10px 16px;text-align:right;font-size:13px;color:var(--text-secondary);">' + (f.created_at || '').substring(0, 10) + '</td>';
         html += '<td style="padding:10px 16px;text-align:right;">';

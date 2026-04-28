@@ -40,11 +40,11 @@ func Logger() func(http.Handler) http.Handler {
 			}
 			switch {
 			case wrapped.status >= 500:
-				logging.Logger().Error("request", args...)
+				logging.Error(r.Context(), "request", "request", args...)
 			case wrapped.status >= 400:
-				logging.Logger().Warn("request", args...)
+				logging.Warn(r.Context(), "request", "request", args...)
 			default:
-				logging.Logger().Info("request", args...)
+				logging.Info(r.Context(), "request", "request", args...)
 			}
 		})
 	}

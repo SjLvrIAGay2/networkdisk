@@ -728,64 +728,44 @@ func (s *Store) HardDeleteFiles(ids []int64) error {
 	if len(ids) == 0 {
 		return fmt.Errorf("批量永久删除：ID列表不能为空")
 	}
-	placeholders := make([]string, len(ids))
-	args := make([]interface{}, len(ids))
-	for i, id := range ids {
-		if _, err := mustBePositive(id); err != nil {
-			return fmt.Errorf("批量永久删除：%w", err)
-		}
-		placeholders[len(ids)-1-i] = "?"
-		args[len(ids)-1-i] = id
-	}
+	placeholders, args := buildHardDeletePlaceholders(ids)
 	query := fmt.Sprintf("DELETE FROM files WHERE id IN (%s)", strings.Join(placeholders, ","))
 	if _, err := s.DB.ExecContext(context.Background(), "SET FOREIGN_KEY_CHECKS = 0"); err != nil {
 		return fmt.Errorf("批量永久删除：%w", err)
 	}
+	defer s.DB.ExecContext(context.Background(), "SET FOREIGN_KEY_CHECKS = 1")
 	_, err := s.DB.ExecContext(context.Background(), query, args...)
-	if fkErr := s.resetFKChecks(); fkErr != nil && err == nil {
-		err = fkErr
-	}
 	if err != nil {
 		return fmt.Errorf("批量永久删除：%w", err)
 	}
 	return nil
-}
-
-func (s *Store) resetFKChecks() error {
-	_, err := s.DB.ExecContext(context.Background(), "SET FOREIGN_KEY_CHECKS = 1")
-	return err
 }
 
 func (tx *Tx) HardDeleteFiles(ids []int64) error {
 	if len(ids) == 0 {
 		return fmt.Errorf("批量永久删除：ID列表不能为空")
 	}
-	placeholders := make([]string, len(ids))
-	args := make([]interface{}, len(ids))
-	for i, id := range ids {
-		if _, err := mustBePositive(id); err != nil {
-			return fmt.Errorf("批量永久删除：%w", err)
-		}
-		placeholders[len(ids)-1-i] = "?"
-		args[len(ids)-1-i] = id
-	}
+	placeholders, args := buildHardDeletePlaceholders(ids)
 	query := fmt.Sprintf("DELETE FROM files WHERE id IN (%s)", strings.Join(placeholders, ","))
 	if _, err := tx.Tx.ExecContext(context.Background(), "SET FOREIGN_KEY_CHECKS = 0"); err != nil {
 		return fmt.Errorf("批量永久删除：%w", err)
 	}
+	defer tx.Tx.ExecContext(context.Background(), "SET FOREIGN_KEY_CHECKS = 1")
 	_, err := tx.Tx.ExecContext(context.Background(), query, args...)
-	if fkErr := tx.resetFKChecks(); fkErr != nil && err == nil {
-		err = fkErr
-	}
 	if err != nil {
 		return fmt.Errorf("批量永久删除：%w", err)
 	}
 	return nil
 }
 
-func (tx *Tx) resetFKChecks() error {
-	_, err := tx.Tx.ExecContext(context.Background(), "SET FOREIGN_KEY_CHECKS = 1")
-	return err
+func buildHardDeletePlaceholders(ids []int64) ([]string, []interface{}) {
+	placeholders := make([]string, len(ids))
+	args := make([]interface{}, len(ids))
+	for i, id := range ids {
+		placeholders[len(ids)-1-i] = "?"
+		args[len(ids)-1-i] = id
+	}
+	return placeholders, args
 }
 
 func (s *Store) FilesByIDs(ids []int64) ([]*model.File, error) {
@@ -858,6 +838,37 @@ func (tx *Tx) FilesByIDs(ids []int64) ([]*model.File, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("files by IDs iterate (tx): %w", err)
+	}
+	return files, nil
+}
+
+func (s *Store) RecentFiles(userID int64, limit int) ([]*model.File, error) {
+	userID, err := mustBePositive(userID)
+	if err != nil {
+		return nil, fmt.Errorf("recent files: %w", err)
+	}
+	rows, err := s.DB.QueryContext(context.Background(),
+		"SELECT id, user_id, parent_id, name, is_dir, size, file_hash, storage_key, thumbnail_key, mime_type, is_starred, is_deleted, deleted_at, created_at, updated_at FROM files WHERE user_id = ? AND is_deleted = 0 ORDER BY updated_at DESC LIMIT ?",
+		userID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("recent files: %w", err)
+	}
+	defer rows.Close()
+	var files []*model.File
+	for rows.Next() {
+		f := &model.File{}
+		var deletedAt sql.NullTime
+		if err := rows.Scan(&f.ID, &f.UserID, &f.ParentID, &f.Name, &f.IsDir, &f.Size, &f.FileHash, &f.StorageKey, &f.ThumbnailKey, &f.MimeType, &f.IsStarred, &f.IsDeleted, &deletedAt, &f.CreatedAt, &f.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("recent files scan: %w", err)
+		}
+		if deletedAt.Valid {
+			f.DeletedAt = &deletedAt.Time
+		}
+		files = append(files, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("recent files iterate: %w", err)
 	}
 	return files, nil
 }

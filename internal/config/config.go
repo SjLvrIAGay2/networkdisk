@@ -44,6 +44,7 @@ type StorageConfig struct {
 	ChunkCleanTimeout  string `toml:"chunk_clean_timeout"`
 	AutoCleanRecycleDays int  `toml:"auto_clean_recycle_days"`
 	FfmpegPath         string `toml:"ffmpeg_path"`
+	TempLinkTTL        string `toml:"temp_link_ttl"`
 }
 
 type UploadConfig struct {
@@ -58,6 +59,7 @@ type AuthConfig struct {
 	JWTExpire     string `toml:"jwt_expire"`
 	RefreshExpire string `toml:"refresh_expire"`
 	BcryptCost    int    `toml:"bcrypt_cost"`
+	TOTPIssuer    string `toml:"totp_issuer"`
 }
 
 type LogConfig struct {
@@ -68,8 +70,10 @@ type LogConfig struct {
 }
 
 type ShareConfig struct {
-	DefaultExpire      string `toml:"default_expire"`
-	MaxPasswordAttempts int   `toml:"max_password_attempts"`
+	DefaultExpire           string `toml:"default_expire"`
+	MaxPasswordAttempts     int    `toml:"max_password_attempts"`
+	BcryptCost              int    `toml:"bcrypt_cost"`
+	PasswordRateLimitReset  string `toml:"password_rate_limit_reset"`
 }
 
 type Config struct {
@@ -93,7 +97,7 @@ var defaults = map[string]interface{}{
 	"server.read_timeout":       "30s",
 	"server.write_timeout":      "60s",
 	"server.shutdown_timeout":   "10s",
-	"server.rate_limit":         10,
+	"server.rate_limit":         60,
 	"server.rate_limit_window":  "1m",
 	"database.max_open_conns": 25,
 	"database.max_idle_conns": 5,
@@ -110,11 +114,15 @@ var defaults = map[string]interface{}{
 	"auth.jwt_expire":          "15m",
 	"auth.refresh_expire":      "7d",
 	"auth.bcrypt_cost":         12,
+	"auth.totp_issuer":        "NetworkDisk",
 	"log.level":                "info",
 	"log.format":               "text",
 	"log.audit_retention_days":  365,
 	"share.default_expire":      "",
 	"share.max_password_attempts": 5,
+	"share.bcrypt_cost":            6,
+	"share.password_rate_limit_reset": "15m",
+	"storage.temp_link_ttl":          "1h",
 }
 
 var reloadWhitelist = map[string]bool{
@@ -161,12 +169,16 @@ var envMapping = map[string]string{
 	"auth.jwt_expire":              "NETWORKDISK_AUTH_JWT_EXPIRE",
 	"auth.refresh_expire":          "NETWORKDISK_AUTH_REFRESH_EXPIRE",
 	"auth.bcrypt_cost":             "NETWORKDISK_AUTH_BCRYPT_COST",
+	"auth.totp_issuer":            "NETWORKDISK_AUTH_TOTP_ISSUER",
 	"log.level":                    "NETWORKDISK_LOG_LEVEL",
 	"log.format":                   "NETWORKDISK_LOG_FORMAT",
 	"log.file":                     "NETWORKDISK_LOG_FILE",
 	"log.audit_retention_days":      "NETWORKDISK_LOG_AUDIT_RETENTION_DAYS",
 	"share.default_expire":          "NETWORKDISK_SHARE_DEFAULT_EXPIRE",
 	"share.max_password_attempts":   "NETWORKDISK_SHARE_MAX_PASSWORD_ATTEMPTS",
+	"share.bcrypt_cost":              "NETWORKDISK_SHARE_BCRYPT_COST",
+	"share.password_rate_limit_reset": "NETWORKDISK_SHARE_PASSWORD_RATE_LIMIT_RESET",
+	"storage.temp_link_ttl":          "NETWORKDISK_STORAGE_TEMP_LINK_TTL",
 }
 
 func Load(path string) (*Config, error) {
@@ -176,6 +188,9 @@ func Load(path string) (*Config, error) {
 	}
 	applyDefaults(cfg)
 	applyEnvOverrides(cfg)
+	if cfg.Auth.BcryptCost < 4 {
+		return nil, fmt.Errorf("auth.bcrypt_cost must be at least 4")
+	}
 	mu.Lock()
 	global = cfg
 	mu.Unlock()
@@ -274,12 +289,14 @@ func fieldName(tomlKey string) string {
 		"jwt_expire":         "JWTExpire",
 		"refresh_expire":     "RefreshExpire",
 		"bcrypt_cost":        "BcryptCost",
+	"totp_issuer":        "TOTPIssuer",
 		"max_file_size":      "MaxFileSize",
 		"thumbnail_max_size":       "ThumbnailMaxSize",
 		"thumbnail_quality":        "ThumbnailQuality",
 		"chunk_size":               "ChunkSize",
 		"chunk_clean_timeout":      "ChunkCleanTimeout",
 		"auto_clean_recycle_days":  "AutoCleanRecycleDays",
+		"temp_link_ttl":           "TempLinkTTL",
 		"audit_retention_days":     "AuditRetentionDays",
 		"default_expire":           "DefaultExpire",
 		"max_password_attempts":    "MaxPasswordAttempts",
@@ -347,6 +364,7 @@ func Reload(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	applyDefaults(newCfg)
 	applyEnvOverrides(newCfg)
 
 	mu.Lock()
@@ -530,6 +548,29 @@ func (c *Config) ChunkCleanTimeoutDuration() time.Duration {
 		d = 24 * time.Hour
 	}
 	return d
+}
+
+func (c *Config) TempLinkTTLDuration() time.Duration {
+	d, err := parseDuration(c.Storage.TempLinkTTL)
+	if err != nil {
+		d = time.Hour
+	}
+	return d
+}
+
+func (c *Config) SharePasswordRateLimitResetDuration() time.Duration {
+	d, err := parseDuration(c.Share.PasswordRateLimitReset)
+	if err != nil {
+		d = 15 * time.Minute
+	}
+	return d
+}
+
+func (c *Config) ShareBcryptCost() int {
+	if c.Share.BcryptCost >= 4 {
+		return c.Share.BcryptCost
+	}
+	return c.Auth.BcryptCost
 }
 
 func (c *Config) Addr() string {

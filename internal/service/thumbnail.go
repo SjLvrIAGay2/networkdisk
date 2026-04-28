@@ -4,9 +4,12 @@ import (
 	"fmt"
 	"image/png"
 	"os"
+	"context"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/chai2010/webp"
 	"github.com/disintegration/imaging"
@@ -17,17 +20,28 @@ import (
 )
 
 type ThumbnailService struct {
-	store     *storage.Local
-	cfg       *config.Config
-	ffmpegPath string
+	store      *storage.Local
+	cfg        atomic.Value
+	ffmpegPath atomic.Value
 }
 
 func NewThumbnailService(store *storage.Local, cfg *config.Config) *ThumbnailService {
-	return &ThumbnailService{
-		store:     store,
-		cfg:       cfg,
-		ffmpegPath: resolveFfmpeg(cfg.Storage.FfmpegPath),
+	ts := &ThumbnailService{store: store}
+	ts.cfg.Store(cfg)
+	ts.ffmpegPath.Store(resolveFfmpeg(cfg.Storage.FfmpegPath))
+	return ts
+}
+
+func (ts *ThumbnailService) getCfg() *config.Config {
+	return ts.cfg.Load().(*config.Config)
+}
+
+func (ts *ThumbnailService) getFfmpegPath() string {
+	v := ts.ffmpegPath.Load()
+	if v == nil {
+		return ""
 	}
+	return v.(string)
 }
 
 func resolveFfmpeg(configPath string) string {
@@ -48,8 +62,8 @@ func resolveFfmpeg(configPath string) string {
 }
 
 func (ts *ThumbnailService) UpdateConfig(cfg *config.Config) {
-	ts.cfg = cfg
-	ts.ffmpegPath = resolveFfmpeg(cfg.Storage.FfmpegPath)
+	ts.cfg.Store(cfg)
+	ts.ffmpegPath.Store(resolveFfmpeg(cfg.Storage.FfmpegPath))
 }
 
 func (ts *ThumbnailService) Generate(fileID int64, storageKey string, mimeType string, onComplete func(fileID int64, thumbnailKey string)) {
@@ -57,7 +71,7 @@ func (ts *ThumbnailService) Generate(fileID int64, storageKey string, mimeType s
 		go ts.generateImage(fileID, storageKey, onComplete)
 		return
 	}
-	if isVideoMime(mimeType) && ts.ffmpegPath != "" {
+	if isVideoMime(mimeType) && ts.getFfmpegPath() != "" {
 		go ts.generateVideo(fileID, storageKey, onComplete)
 	}
 }
@@ -65,13 +79,13 @@ func (ts *ThumbnailService) Generate(fileID int64, storageKey string, mimeType s
 func (ts *ThumbnailService) generateImage(fileID int64, storageKey string, onComplete func(fileID int64, thumbnailKey string)) {
 	defer func() {
 		if r := recover(); r != nil {
-			logging.Logger().Error("thumbnail generation panicked", "panic", r, "file_id", fileID, "storage_key", storageKey)
+			logging.Error(context.Background(), "thumbnail", "thumbnail generation panicked", "panic", r, "file_id", fileID, "storage_key", storageKey)
 		}
 	}()
 	srcPath := ts.store.Path(storageKey)
 	src, err := imaging.Open(srcPath)
 	if err != nil {
-		logging.Logger().Error("thumbnail generation failed", "error", err, "file_id", fileID, "storage_key", storageKey)
+		logging.Error(context.Background(), "thumbnail", "thumbnail generation failed", "error", err, "file_id", fileID, "storage_key", storageKey)
 		return
 	}
 
@@ -81,19 +95,19 @@ func (ts *ThumbnailService) generateImage(fileID int64, storageKey string, onCom
 	thumbPath := ts.store.Path(thumbKey)
 
 	if err := os.MkdirAll(filepath.Dir(thumbPath), 0755); err != nil {
-		logging.Logger().Error("thumbnail generation failed", "error", fmt.Errorf("mkdir: %w", err), "file_id", fileID)
+		logging.Error(context.Background(), "thumbnail", "thumbnail generation failed", "error", fmt.Errorf("mkdir: %w", err), "file_id", fileID)
 		return
 	}
 
 	f, err := os.Create(thumbPath)
 	if err != nil {
-		logging.Logger().Error("thumbnail generation failed", "error", fmt.Errorf("create: %w", err), "file_id", fileID)
+		logging.Error(context.Background(), "thumbnail", "thumbnail generation failed", "error", fmt.Errorf("create: %w", err), "file_id", fileID)
 		return
 	}
 	defer f.Close()
 
-	if err := webp.Encode(f, thumb, &webp.Options{Quality: float32(ts.cfg.Storage.ThumbnailQuality)}); err != nil {
-		logging.Logger().Error("thumbnail generation failed", "error", fmt.Errorf("encode: %w", err), "file_id", fileID)
+	if err := webp.Encode(f, thumb, &webp.Options{Quality: float32(ts.getCfg().Storage.ThumbnailQuality)}); err != nil {
+		logging.Error(context.Background(), "thumbnail", "thumbnail generation failed", "error", fmt.Errorf("encode: %w", err), "file_id", fileID)
 		return
 	}
 
@@ -103,12 +117,12 @@ func (ts *ThumbnailService) generateImage(fileID int64, storageKey string, onCom
 func (ts *ThumbnailService) generateVideo(fileID int64, storageKey string, onComplete func(fileID int64, thumbnailKey string)) {
 	defer func() {
 		if r := recover(); r != nil {
-			logging.Logger().Error("video thumbnail panicked", "panic", r, "file_id", fileID, "storage_key", storageKey)
+			logging.Error(context.Background(), "thumbnail", "video thumbnail panicked", "panic", r, "file_id", fileID, "storage_key", storageKey)
 		}
 	}()
 	thumbnailKey, err := ts.extractVideoFrame(storageKey)
 	if err != nil {
-		logging.Logger().Error("video thumbnail failed", "error", err, "file_id", fileID, "storage_key", storageKey)
+		logging.Error(context.Background(), "thumbnail", "video thumbnail failed", "error", err, "file_id", fileID, "storage_key", storageKey)
 		return
 	}
 	onComplete(fileID, thumbnailKey)
@@ -116,9 +130,10 @@ func (ts *ThumbnailService) generateVideo(fileID int64, storageKey string, onCom
 
 func (ts *ThumbnailService) extractVideoFrame(storageKey string) (string, error) {
 	srcPath := ts.store.Path(storageKey)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
-	cmd := exec.Command(ts.ffmpegPath, "-ss", "00:00:01", "-i", srcPath, "-vframes", "1", "-f", "image2pipe", "-vcodec", "png", "-")
-	cmd.Stderr = nil
+	cmd := exec.CommandContext(ctx, ts.getFfmpegPath(), "-ss", "00:00:01", "-i", srcPath, "-vframes", "1", "-f", "image2pipe", "-vcodec", "png", "-")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return "", fmt.Errorf("ffmpeg stdout pipe: %w", err)
@@ -151,7 +166,7 @@ func (ts *ThumbnailService) extractVideoFrame(storageKey string) (string, error)
 	}
 	defer f.Close()
 
-	if err := webp.Encode(f, thumb, &webp.Options{Quality: float32(ts.cfg.Storage.ThumbnailQuality)}); err != nil {
+	if err := webp.Encode(f, thumb, &webp.Options{Quality: float32(ts.getCfg().Storage.ThumbnailQuality)}); err != nil {
 		return "", fmt.Errorf("encode webp thumbnail: %w", err)
 	}
 

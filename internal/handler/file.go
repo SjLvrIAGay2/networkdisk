@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -44,39 +45,12 @@ func (h *FileHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	files, err := h.svc.ListDirectory(parentID, userID)
 	if err != nil {
-		logging.Logger().Error("list files failed", "error", err)
+		logging.Error(r.Context(), "file", "list files failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
 
-	type fileEntry struct {
-		ID           int64   `json:"id"`
-		Name         string  `json:"name"`
-		IsDir        bool    `json:"is_dir"`
-		Size         int64   `json:"size"`
-		MimeType     string  `json:"mime_type"`
-		ThumbnailKey string  `json:"thumbnail_key"`
-		ParentID     *int64  `json:"parent_id"`
-		CreatedAt    string  `json:"created_at"`
-	}
-
-	entries := make([]fileEntry, 0, len(files))
-	for _, f := range files {
-		entries = append(entries, fileEntry{
-			ID:           f.ID,
-			Name:         f.Name,
-			IsDir:        f.IsDir,
-			Size:         f.Size,
-			MimeType:     f.MimeType,
-			ThumbnailKey: f.ThumbnailKey,
-			ParentID:     f.ParentID,
-			CreatedAt:    f.CreatedAt.Format("2006-01-02T15:04:05Z"),
-		})
-	}
-	if entries == nil {
-		entries = []fileEntry{}
-	}
-
+	entries := newFileEntries(files)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"files": entries,
 	})
@@ -121,7 +95,7 @@ func (h *FileHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, service.ErrExtensionBlocked):
 			writeError(w, http.StatusUnprocessableEntity, "不支持的文件类型")
 		default:
-			logging.Logger().Error("upload file failed", "error", err)
+			logging.Error(r.Context(), "file", "upload file failed", "error", err)
 			writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		}
 		return
@@ -157,7 +131,7 @@ func (h *FileHandler) Download(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "文件不存在")
 			return
 		}
-		logging.Logger().Error("download file failed", "error", err)
+		logging.Error(r.Context(), "file", "download file failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
@@ -168,7 +142,10 @@ func (h *FileHandler) Download(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Length", strconv.FormatInt(f.Size, 10))
 	w.WriteHeader(http.StatusOK)
-	io.Copy(w, reader)
+	if _, err := io.Copy(w, reader); err != nil {
+		logging.Error(r.Context(), "file", "download copy failed", "error", err)
+		return
+	}
 	h.svc.RecordAudit(userID, "download", "file", id, f.Name, middleware.ClientIP(r))
 }
 
@@ -192,7 +169,7 @@ func (h *FileHandler) Thumbnail(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "缩略图不存在")
 			return
 		}
-		logging.Logger().Error("thumbnail failed", "error", err)
+		logging.Error(r.Context(), "file", "thumbnail failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
@@ -200,7 +177,9 @@ func (h *FileHandler) Thumbnail(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "image/webp")
 	w.WriteHeader(http.StatusOK)
-	io.Copy(w, reader)
+	if _, err := io.Copy(w, reader); err != nil {
+		logging.Error(r.Context(), "file", "thumbnail copy failed", "error", err)
+	}
 }
 
 func (h *FileHandler) Mkdir(w http.ResponseWriter, r *http.Request) {
@@ -215,7 +194,9 @@ func (h *FileHandler) Mkdir(w http.ResponseWriter, r *http.Request) {
 		Name     string `json:"name"`
 		ParentID *int64 `json:"parent_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "请求格式无效")
 		return
 	}
@@ -226,7 +207,7 @@ func (h *FileHandler) Mkdir(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "名称已存在")
 			return
 		}
-		logging.Logger().Error("mkdir failed", "error", err)
+		logging.Error(r.Context(), "file", "mkdir failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
@@ -258,7 +239,9 @@ func (h *FileHandler) Rename(w http.ResponseWriter, r *http.Request) {
 		Name     string `json:"name"`
 		ParentID *int64 `json:"parent_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "请求格式无效")
 		return
 	}
@@ -281,7 +264,7 @@ func (h *FileHandler) Rename(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "名称已存在")
 			return
 		}
-		logging.Logger().Error("rename/move file failed", "error", err)
+		logging.Error(r.Context(), "file", "rename/move file failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
@@ -312,7 +295,7 @@ func (h *FileHandler) Delete(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "文件不存在")
 			return
 		}
-		logging.Logger().Error("delete file failed", "error", err)
+		logging.Error(r.Context(), "file", "delete file failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
@@ -329,7 +312,7 @@ func (h *FileHandler) RecycleList(w http.ResponseWriter, r *http.Request) {
 	}
 	files, err := h.svc.FilesInRecycleBin(userID)
 	if err != nil {
-		logging.Logger().Error("recycle list failed", "error", err)
+		logging.Error(r.Context(), "file", "recycle list failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
@@ -371,7 +354,7 @@ func (h *FileHandler) Restore(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "文件不存在")
 			return
 		}
-		logging.Logger().Error("restore file failed", "error", err)
+		logging.Error(r.Context(), "file", "restore file failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
@@ -394,7 +377,7 @@ func (h *FileHandler) PermanentDelete(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "文件不存在")
 			return
 		}
-		logging.Logger().Error("permanent delete failed", "error", err)
+		logging.Error(r.Context(), "file", "permanent delete failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
@@ -419,7 +402,7 @@ func (h *FileHandler) PermanentDeletePreview(w http.ResponseWriter, r *http.Requ
 			writeError(w, http.StatusNotFound, "文件不存在")
 			return
 		}
-		logging.Logger().Error("permanent delete preview failed", "error", err)
+		logging.Error(r.Context(), "file", "permanent delete preview failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
@@ -444,7 +427,9 @@ func (h *FileHandler) Copy(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ParentID *int64 `json:"parent_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "请求格式无效")
 		return
 	}
@@ -458,7 +443,7 @@ func (h *FileHandler) Copy(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "名称已存在")
 			return
 		}
-		logging.Logger().Error("copy file failed", "error", err)
+		logging.Error(r.Context(), "file", "copy file failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
@@ -482,7 +467,7 @@ func (h *FileHandler) ToggleStar(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "文件不存在")
 			return
 		}
-		logging.Logger().Error("toggle star failed", "error", err)
+		logging.Error(r.Context(), "file", "toggle star failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
@@ -497,32 +482,11 @@ func (h *FileHandler) StarredList(w http.ResponseWriter, r *http.Request) {
 	}
 	files, err := h.svc.StarredFiles(userID)
 	if err != nil {
-		logging.Logger().Error("starred list failed", "error", err)
+		logging.Error(r.Context(), "file", "starred list failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
-	type fileEntry struct {
-		ID           int64   `json:"id"`
-		Name         string  `json:"name"`
-		IsDir        bool    `json:"is_dir"`
-		Size         int64   `json:"size"`
-		MimeType     string  `json:"mime_type"`
-		ThumbnailKey string  `json:"thumbnail_key"`
-		ParentID     *int64  `json:"parent_id"`
-		CreatedAt    string  `json:"created_at"`
-	}
-	entries := make([]fileEntry, 0, len(files))
-	for _, f := range files {
-		entries = append(entries, fileEntry{
-			ID: f.ID, Name: f.Name, IsDir: f.IsDir,
-			Size: f.Size, MimeType: f.MimeType,
-			ThumbnailKey: f.ThumbnailKey, ParentID: f.ParentID,
-			CreatedAt: f.CreatedAt.Format("2006-01-02T15:04:05Z"),
-		})
-	}
-	if entries == nil {
-		entries = []fileEntry{}
-	}
+	entries := newFileEntries(files)
 	writeJSON(w, http.StatusOK, map[string]interface{}{"files": entries})
 }
 
@@ -536,12 +500,15 @@ func (h *FileHandler) BatchDelete(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		IDs []int64 `json:"ids"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "请求格式无效")
 		return
 	}
 	if err := h.svc.BatchDelete(body.IDs, userID); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		logging.Error(r.Context(), "file", "batch delete failed", "error", err)
+		writeError(w, http.StatusBadRequest, "批量删除失败")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "批量删除成功"})
@@ -558,12 +525,15 @@ func (h *FileHandler) BatchMove(w http.ResponseWriter, r *http.Request) {
 		IDs      []int64 `json:"ids"`
 		ParentID *int64  `json:"parent_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "请求格式无效")
 		return
 	}
 	if err := h.svc.BatchMove(body.IDs, body.ParentID, userID); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		logging.Error(r.Context(), "file", "batch move failed", "error", err)
+		writeError(w, http.StatusBadRequest, "批量移动失败")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "批量移动成功"})
@@ -590,15 +560,21 @@ func (h *FileHandler) DownloadZip(w http.ResponseWriter, r *http.Request) {
 		ids = append(ids, id)
 	}
 	if err := h.svc.ValidateZipDownload(ids, userID); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		logging.Error(r.Context(), "file", "zip validate failed", "error", err)
+		writeError(w, http.StatusBadRequest, "文件不存在或无法下载")
+		return
+	}
+	var buf bytes.Buffer
+	if err := h.svc.DownloadZip(ids, userID, &buf); err != nil {
+		logging.Error(r.Context(), "file", "download zip failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", "attachment; filename=\"download.zip\"")
+	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
 	w.WriteHeader(http.StatusOK)
-	if err := h.svc.DownloadZip(ids, userID, w); err != nil {
-		logHTTPError(w, r, err)
-	}
+	w.Write(buf.Bytes())
 }
 
 func (h *FileHandler) InitUpload(w http.ResponseWriter, r *http.Request) {
@@ -613,7 +589,9 @@ func (h *FileHandler) InitUpload(w http.ResponseWriter, r *http.Request) {
 		ParentID  *int64 `json:"parent_id"`
 		TotalSize int64  `json:"total_size"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "请求格式无效")
 		return
 	}
@@ -625,7 +603,7 @@ func (h *FileHandler) InitUpload(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, service.ErrExtensionBlocked):
 			writeError(w, http.StatusUnprocessableEntity, "不支持的文件类型")
 		default:
-			logging.Logger().Error("init upload failed", "error", err)
+			logging.Error(r.Context(), "file", "init upload failed", "error", err)
 			writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		}
 		return
@@ -657,7 +635,7 @@ func (h *FileHandler) UploadChunk(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 	if err := h.svc.UploadChunk(uploadID, index, file, userID); err != nil {
-		logging.Logger().Error("upload chunk failed", "error", err)
+		logging.Error(r.Context(), "file", "upload chunk failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
@@ -674,13 +652,15 @@ func (h *FileHandler) CompleteUpload(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		UploadID string `json:"upload_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "请求格式无效")
 		return
 	}
 	result, err := h.svc.CompleteUpload(body.UploadID, userID)
 	if err != nil {
-		logging.Logger().Error("complete upload failed", "error", err)
+		logging.Error(r.Context(), "file", "complete upload failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
@@ -691,7 +671,7 @@ func (h *FileHandler) CompleteUpload(w http.ResponseWriter, r *http.Request) {
 		"mime_type": result.File.MimeType,
 		"duplicate": result.Duplicate,
 	})
-		h.svc.RecordAudit(userID, "upload", "file", result.File.ID, result.File.Name, middleware.ClientIP(r))
+	h.svc.RecordAudit(userID, "upload", "file", result.File.ID, result.File.Name, middleware.ClientIP(r))
 }
 
 func (h *FileHandler) UploadStatus(w http.ResponseWriter, r *http.Request) {
@@ -707,6 +687,7 @@ func (h *FileHandler) UploadStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	session, completed, err := h.svc.UploadStatus(uploadID, userID)
 	if err != nil {
+		logging.Error(r.Context(), "file", "upload status failed", "error", err)
 		writeError(w, http.StatusNotFound, "上传会话不存在")
 		return
 	}
@@ -740,7 +721,7 @@ func (h *FileHandler) Preview(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "文件不存在")
 			return
 		}
-		logging.Logger().Error("preview failed", "error", err)
+		logging.Error(r.Context(), "file", "preview failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
@@ -748,7 +729,7 @@ func (h *FileHandler) Preview(w http.ResponseWriter, r *http.Request) {
 	if previewType == "image" || previewType == "video" || previewType == "audio" || previewType == "pdf" {
 		_, reader, err := h.svc.OpenPreviewFile(id, userID)
 		if err != nil {
-			logging.Logger().Error("preview open file failed", "error", err)
+			logging.Error(r.Context(), "file", "preview open file failed", "error", err)
 			writeError(w, http.StatusInternalServerError, "服务器内部错误")
 			return
 		}
@@ -761,7 +742,9 @@ func (h *FileHandler) Preview(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", strconv.FormatInt(f.Size, 10))
 		w.Header().Set("Content-Disposition", "inline")
 		w.WriteHeader(http.StatusOK)
-		io.Copy(w, reader)
+		if _, err := io.Copy(w, reader); err != nil {
+			logging.Error(r.Context(), "file", "preview stream copy failed", "error", err)
+		}
 		return
 	}
 
@@ -794,7 +777,7 @@ func (h *FileHandler) TempLink(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "文件不存在")
 			return
 		}
-		logging.Logger().Error("temp link failed", "error", err)
+		logging.Error(r.Context(), "file", "temp link failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
@@ -804,10 +787,6 @@ func (h *FileHandler) TempLink(w http.ResponseWriter, r *http.Request) {
 		"file_id":   td.FileID,
 		"expire_at": td.ExpireAt.Format("2006-01-02T15:04:05Z"),
 	})
-}
-
-func logHTTPError(w http.ResponseWriter, r *http.Request, err error) {
-	logging.Logger().Error("handler error", "method", r.Method, "path", r.URL.Path, "error", err)
 }
 
 func userIDFromContext(r *http.Request) int64 {

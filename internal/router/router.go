@@ -11,7 +11,7 @@ import (
 
 type StopFunc func()
 
-func New(authH *handler.AuthHandler, fileH *handler.FileHandler, sysH *handler.SystemHandler, shareH *handler.ShareHandler, cfg *config.Config) (http.Handler, StopFunc) {
+func New(authH *handler.AuthHandler, fileH *handler.FileHandler, sysH *handler.SystemHandler, shareH *handler.ShareHandler, searchH *handler.SearchHandler, tagH *handler.TagHandler, cfg *config.Config) (http.Handler, StopFunc) {
 	authMw := middleware.Auth(cfg)
 	csrfMw := middleware.CSRF()
 	rateLimitMw, stopRateLimiter := middleware.RateLimit(cfg.Server.RateLimit, cfg.RateLimitWindowDuration())
@@ -20,12 +20,17 @@ func New(authH *handler.AuthHandler, fileH *handler.FileHandler, sysH *handler.S
 
 	mux := http.NewServeMux()
 
+	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir("web/static"))))
+
 	mux.Handle("POST /api/auth/register", wrap(authH.Register, rateLimitMw, csrfMw))
 	mux.Handle("POST /api/auth/login", wrap(authH.Login, rateLimitMw, csrfMw))
 	mux.Handle("POST /api/auth/logout", wrap(authH.Logout, authMw, csrfMw))
 	mux.Handle("POST /api/auth/refresh", wrap(authH.Refresh, csrfMw))
 	mux.Handle("GET /api/auth/me", wrap(authH.Me, authMw))
 	mux.Handle("PATCH /api/auth/password", wrap(authH.ChangePassword, authMw, csrfMw))
+	mux.Handle("POST /api/auth/totp/enable", wrap(authH.EnableTOTP, authMw, csrfMw))
+	mux.Handle("POST /api/auth/totp/verify", wrap(authH.VerifyTOTP, authMw, csrfMw))
+	mux.Handle("POST /api/auth/totp/disable", wrap(authH.DisableTOTP, authMw, csrfMw))
 
 	mux.Handle("GET /api/files", wrap(fileH.List, authMw))
 	mux.Handle("POST /api/files/upload", wrap(fileH.Upload, authMw, csrfMw))
@@ -45,6 +50,8 @@ func New(authH *handler.AuthHandler, fileH *handler.FileHandler, sysH *handler.S
 	mux.Handle("POST /api/files/batch-delete", wrap(fileH.BatchDelete, authMw, csrfMw))
 	mux.Handle("POST /api/files/batch-move", wrap(fileH.BatchMove, authMw, csrfMw))
 	mux.Handle("GET /api/files/download-zip", wrap(fileH.DownloadZip, authMw))
+	mux.Handle("GET /api/files/recent", wrap(fileH.Recent, authMw))
+	mux.Handle("GET /api/files/dashboard", wrap(fileH.Dashboard, authMw))
 
 	mux.Handle("POST /api/files/upload/init", wrap(fileH.InitUpload, authMw, csrfMw))
 	mux.Handle("POST /api/files/upload/chunk", wrap(fileH.UploadChunk, authMw, csrfMw))
@@ -53,6 +60,15 @@ func New(authH *handler.AuthHandler, fileH *handler.FileHandler, sysH *handler.S
 
 	mux.Handle("GET /api/files/preview/{id}", wrap(fileH.Preview, authMw))
 	mux.Handle("POST /api/files/{id}/temp-link", wrap(fileH.TempLink, authMw, csrfMw))
+
+	mux.Handle("GET /api/search", wrap(searchH.Search, authMw))
+	mux.Handle("GET /api/search/suggest", wrap(searchH.Suggest, authMw))
+
+	mux.Handle("GET /api/tags", wrap(tagH.List, authMw))
+	mux.Handle("POST /api/tags", wrap(tagH.Create, authMw, csrfMw))
+	mux.Handle("DELETE /api/tags/{id}", wrap(tagH.Delete, authMw, csrfMw))
+	mux.Handle("GET /api/tags/{id}/files", wrap(tagH.FilesByTag, authMw))
+	mux.Handle("POST /api/files/tags", wrap(tagH.BatchAttach, authMw, csrfMw))
 
 	mux.Handle("POST /api/shares", wrap(shareH.Create, authMw, csrfMw))
 	mux.Handle("GET /api/shares", wrap(shareH.List, authMw))
@@ -85,15 +101,30 @@ func New(authH *handler.AuthHandler, fileH *handler.FileHandler, sysH *handler.S
 		sharesTmpl.ExecuteTemplate(w, "shares.html", nil)
 	}, csrfMw))
 
+	dashboardTmpl := template.Must(template.ParseFiles("web/templates/base.html", "web/templates/dashboard.html"))
+	mux.Handle("GET /dashboard", wrap(func(w http.ResponseWriter, r *http.Request) {
+		dashboardTmpl.ExecuteTemplate(w, "dashboard.html", nil)
+	}, csrfMw))
+
+	searchTmpl := template.Must(template.ParseFiles("web/templates/base.html", "web/templates/search.html"))
+	mux.Handle("GET /search", wrap(func(w http.ResponseWriter, r *http.Request) {
+		searchTmpl.ExecuteTemplate(w, "search.html", nil)
+	}, csrfMw))
+
 	mux.Handle("GET /s/{token}", wrap(shareH.ServePublicPage))
 	mux.Handle("POST /s/{token}/verify", wrap(shareH.VerifyPassword, rateLimitMw))
 	mux.Handle("GET /s/{token}/download", wrap(shareH.Download))
 
 	mux.Handle("GET /d/{token}", wrap(shareH.TempDownload))
 
+	corsMw := middleware.CORS()
+	traceMw := middleware.TraceID()
+
 	var h http.Handler = mux
+	h = corsMw(h)
 	h = recoverMw(h)
 	h = loggerMw(h)
+	h = traceMw(h)
 	return h, stopRateLimiter
 }
 

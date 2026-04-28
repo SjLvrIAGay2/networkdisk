@@ -45,9 +45,9 @@ func (s *Store) UserByUsername(username string) (*model.User, error) {
 	}
 	user := &model.User{}
 	err := s.DB.QueryRowContext(context.Background(),
-		"SELECT id, username, password_hash, storage_used, created_at, updated_at FROM users WHERE username = ?",
+		"SELECT id, username, password_hash, storage_used, totp_secret, created_at, updated_at FROM users WHERE username = ?",
 		username,
-	).Scan(&user.ID, &user.Username, &user.PasswordHash, &user.StorageUsed, &user.CreatedAt, &user.UpdatedAt)
+	).Scan(&user.ID, &user.Username, &user.PasswordHash, &user.StorageUsed, &user.TOTPSecret, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("user by username: %w", err)
 	}
@@ -60,9 +60,9 @@ func (s *Store) UserByID(id int64) (*model.User, error) {
 	}
 	user := &model.User{}
 	err := s.DB.QueryRowContext(context.Background(),
-		"SELECT id, username, password_hash, storage_used, created_at, updated_at FROM users WHERE id = ?",
+		"SELECT id, username, password_hash, storage_used, totp_secret, created_at, updated_at FROM users WHERE id = ?",
 		id,
-	).Scan(&user.ID, &user.Username, &user.PasswordHash, &user.StorageUsed, &user.CreatedAt, &user.UpdatedAt)
+	).Scan(&user.ID, &user.Username, &user.PasswordHash, &user.StorageUsed, &user.TOTPSecret, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("user by id: %w", err)
 	}
@@ -140,6 +140,31 @@ func (tx *Tx) RevokeRefreshToken(id int64) error {
 	}
 	if affected == 0 {
 		return fmt.Errorf("吊销刷新令牌：令牌已被吊销或不存在")
+	}
+	return nil
+}
+
+func (tx *Tx) UpdateUserPassword(userID int64, passwordHash string) error {
+	if userID <= 0 {
+		return fmt.Errorf("更新用户密码（事务）：ID必须为正数")
+	}
+	if passwordHash == "" {
+		return fmt.Errorf("更新用户密码（事务）：密码哈希不能为空")
+	}
+	_, err := tx.Tx.ExecContext(context.Background(), "UPDATE users SET password_hash = ? WHERE id = ?", passwordHash, userID)
+	if err != nil {
+		return fmt.Errorf("update user password tx: %w", err)
+	}
+	return nil
+}
+
+func (tx *Tx) RevokeUserTokens(userID int64) error {
+	if userID <= 0 {
+		return fmt.Errorf("吊销用户令牌（事务）：用户ID必须为正数")
+	}
+	_, err := tx.Tx.ExecContext(context.Background(), "UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ? AND revoked = 0", userID)
+	if err != nil {
+		return fmt.Errorf("revoke user tokens tx: %w", err)
 	}
 	return nil
 }
@@ -285,7 +310,17 @@ func (s *Store) UpdateUserStorageUsed(userID int64, delta int64) error {
 }
 
 func (s *Store) AllUserIDs() ([]int64, error) {
-	rows, err := s.DB.QueryContext(context.Background(), "SELECT id FROM users")
+	return s.AllUserIDsPaginated(0, 0)
+}
+
+func (s *Store) AllUserIDsPaginated(limit, offset int) ([]int64, error) {
+	query := "SELECT id FROM users ORDER BY id"
+	var args []interface{}
+	if limit > 0 {
+		query += " LIMIT ? OFFSET ?"
+		args = append(args, limit, offset)
+	}
+	rows, err := s.DB.QueryContext(context.Background(), query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("all user ids: %w", err)
 	}
@@ -302,4 +337,38 @@ func (s *Store) AllUserIDs() ([]int64, error) {
 		return nil, fmt.Errorf("all user ids iterate: %w", err)
 	}
 	return ids, nil
+}
+
+func (s *Store) SetTOTPSecret(userID int64, secret string) error {
+	if userID <= 0 {
+		return fmt.Errorf("设置TOTP密钥：用户ID必须为正数")
+	}
+	_, err := s.DB.ExecContext(context.Background(), "UPDATE users SET totp_secret = ? WHERE id = ?", secret, userID)
+	if err != nil {
+		return fmt.Errorf("set totp secret: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) RevokeUserTokens(userID int64) error {
+	if userID <= 0 {
+		return fmt.Errorf("吊销用户令牌：用户ID必须为正数")
+	}
+	_, err := s.DB.ExecContext(context.Background(), "UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ? AND revoked = 0", userID)
+	if err != nil {
+		return fmt.Errorf("revoke user tokens: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) UserTOTPSecret(userID int64) (string, error) {
+	if userID <= 0 {
+		return "", fmt.Errorf("获取TOTP密钥：用户ID必须为正数")
+	}
+	var secret string
+	err := s.DB.QueryRowContext(context.Background(), "SELECT totp_secret FROM users WHERE id = ?", userID).Scan(&secret)
+	if err != nil {
+		return "", fmt.Errorf("user totp secret: %w", err)
+	}
+	return secret, nil
 }

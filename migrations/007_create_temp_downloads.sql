@@ -1,4 +1,4 @@
-CREATE TABLE temp_downloads (
+CREATE TABLE IF NOT EXISTS temp_downloads (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     token VARCHAR(128) NOT NULL,
     file_id BIGINT NOT NULL,

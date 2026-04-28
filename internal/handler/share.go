@@ -50,13 +50,19 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		ExpireDays   int    `json:"expire_days"`
 		MaxDownloads int    `json:"max_downloads"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "请求格式无效")
 		return
 	}
 
 	if body.FileID <= 0 {
 		writeError(w, http.StatusBadRequest, "缺少文件ID")
+		return
+	}
+	if body.MaxDownloads < 0 {
+		writeError(w, http.StatusBadRequest, "下载次数不能为负数")
 		return
 	}
 
@@ -72,7 +78,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "文件不存在")
 			return
 		}
-		logging.Logger().Error("create share failed", "error", err)
+		logging.Error(r.Context(), "share", "create share failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
@@ -98,7 +104,7 @@ func (h *ShareHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	shares, err := h.svc.MyShares(userID)
 	if err != nil {
-		logging.Logger().Error("list shares failed", "error", err)
+		logging.Error(r.Context(), "share", "list shares failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
@@ -156,7 +162,7 @@ func (h *ShareHandler) Delete(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "分享不存在")
 			return
 		}
-		logging.Logger().Error("delete share failed", "error", err)
+		logging.Error(r.Context(), "share", "delete share failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
@@ -176,10 +182,10 @@ func (h *ShareHandler) ServePublicPage(w http.ResponseWriter, r *http.Request) {
 
 	if share.PasswordHash != "" {
 		h.accessTmpl.ExecuteTemplate(w, "share_access.html", map[string]interface{}{
-			"token":       share.Token,
-			"fileName":    f.Name,
-			"fileSize":    f.Size,
-			"mimeType":    f.MimeType,
+			"token":     share.Token,
+			"fileName":  f.Name,
+			"fileSize":  f.Size,
+			"mimeType":  f.MimeType,
 		})
 		return
 	}
@@ -194,7 +200,9 @@ func (h *ShareHandler) VerifyPassword(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Password string `json:"password"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
 		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": false, "error": "请求格式无效"})
 		return
 	}
@@ -250,7 +258,7 @@ func (h *ShareHandler) Download(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, service.ErrShareMaxReached):
 			writeError(w, http.StatusGone, "分享链接已达到下载上限")
 		default:
-			logging.Logger().Error("share download failed", "error", err)
+			logging.Error(r.Context(), "share", "share download failed", "error", err)
 			writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		}
 		return
@@ -258,7 +266,7 @@ func (h *ShareHandler) Download(w http.ResponseWriter, r *http.Request) {
 
 	reader, err := h.fileSvc.OpenFileReader(f)
 	if err != nil {
-		logging.Logger().Error("share download open file failed", "error", err)
+		logging.Error(r.Context(), "share", "share download open file failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
@@ -279,7 +287,9 @@ func (h *ShareHandler) Download(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Length", strconv.FormatInt(f.Size, 10))
 	w.WriteHeader(http.StatusOK)
-	io.Copy(w, reader)
+	if _, err := io.Copy(w, reader); err != nil {
+		logging.Error(r.Context(), "share", "share download copy failed", "error", err)
+	}
 }
 
 func (h *ShareHandler) TempDownload(w http.ResponseWriter, r *http.Request) {
@@ -293,7 +303,7 @@ func (h *ShareHandler) TempDownload(w http.ResponseWriter, r *http.Request) {
 
 	reader, err := h.fileSvc.OpenFileReader(f)
 	if err != nil {
-		logging.Logger().Error("temp download open file failed", "error", err)
+		logging.Error(r.Context(), "share", "temp download open file failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
@@ -304,7 +314,9 @@ func (h *ShareHandler) TempDownload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Length", strconv.FormatInt(f.Size, 10))
 	w.WriteHeader(http.StatusOK)
-	io.Copy(w, reader)
+	if _, err := io.Copy(w, reader); err != nil {
+		logging.Error(r.Context(), "share", "temp download copy failed", "error", err)
+	}
 }
 
 func (h *ShareHandler) shareViewData(share *model.Share, f *model.File) map[string]interface{} {
@@ -319,11 +331,7 @@ func (h *ShareHandler) shareViewData(share *model.Share, f *model.File) map[stri
 	if previewType == "download" && f.MimeType != "" {
 		if strings.HasPrefix(f.MimeType, "text/") {
 			content, pt := h.fileSvc.ShareFileContent(f)
-			if pt == "markdown" {
-				data["content"] = template.HTML(content)
-			} else {
-				data["content"] = content
-			}
+			data["content"] = content
 			data["previewType"] = pt
 		}
 	}
