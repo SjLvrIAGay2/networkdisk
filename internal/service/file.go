@@ -78,9 +78,6 @@ func (svc *FileService) lockHash(hash string) {
 func (svc *FileService) unlockHash(hash string) {
 	svc.hashMu.Lock()
 	mu, ok := svc.hashLocks[hash]
-	if ok {
-		delete(svc.hashLocks, hash)
-	}
 	svc.hashMu.Unlock()
 	if ok {
 		mu.Unlock()
@@ -419,12 +416,18 @@ func (svc *FileService) OpenThumbnail(fileID int64, userID int64) (*model.File, 
 	return f, reader, nil
 }
 
-func (svc *FileService) CleanupTempFiles() {
+func (svc *FileService) CleanupTempFiles() error {
 	tmpDir := svc.fileStore.Path("tmp")
-	matches, _ := filepath.Glob(filepath.Join(tmpDir, "upload-*.tmp"))
-	for _, m := range matches {
-		os.Remove(m)
+	matches, err := filepath.Glob(filepath.Join(tmpDir, "upload-*.tmp"))
+	if err != nil {
+		return fmt.Errorf("cleanup temp files glob: %w", err)
 	}
+	for _, m := range matches {
+		if err := os.Remove(m); err != nil {
+			return fmt.Errorf("cleanup temp file %s: %w", m, err)
+		}
+	}
+	return nil
 }
 
 func (svc *FileService) validateParentDir(parentID int64, userID int64) error {
@@ -1350,6 +1353,7 @@ func (svc *FileService) CompleteUpload(uploadID string, userID int64) (*UploadRe
 		svc.cleanupUploadSession(uploadID)
 		return nil, fmt.Errorf("文件哈希不匹配")
 	}
+	svc.lockHash(hash)
 	existingFile, err := svc.store.FileByHash(hash)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("check hash: %w", err)

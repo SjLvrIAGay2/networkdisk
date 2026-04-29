@@ -6,6 +6,7 @@ import (
 
 	"networkdisk/internal/config"
 	"networkdisk/internal/handler"
+	"networkdisk/internal/logging"
 	"networkdisk/internal/middleware"
 )
 
@@ -14,7 +15,7 @@ type StopFunc func()
 func New(authH *handler.AuthHandler, fileH *handler.FileHandler, sysH *handler.SystemHandler, shareH *handler.ShareHandler, searchH *handler.SearchHandler, tagH *handler.TagHandler, cfg *config.Config) (http.Handler, StopFunc) {
 	authMw := middleware.Auth(cfg)
 	csrfMw := middleware.CSRF()
-	rateLimitMw, stopRateLimiter := middleware.RateLimit(cfg.Server.RateLimit, cfg.RateLimitWindowDuration())
+	rateLimitMw, stopRateLimiter := middleware.RateLimit(cfg.Server.RateLimit, cfg.RateLimitWindowDuration(), cfg.Server.TrustedProxy)
 	loggerMw := middleware.Logger()
 	recoverMw := middleware.Recover()
 
@@ -79,7 +80,7 @@ func New(authH *handler.AuthHandler, fileH *handler.FileHandler, sysH *handler.S
 
 	recycleTmpl := template.Must(template.ParseFiles("web/templates/base.html", "web/templates/recycle.html"))
 	mux.Handle("GET /recycle", wrap(func(w http.ResponseWriter, r *http.Request) {
-		recycleTmpl.ExecuteTemplate(w, "recycle.html", nil)
+		recycleTmpl.ExecuteTemplate(w,"recycle.html", nil)
 	}, csrfMw))
 
 	loginTmpl := template.Must(template.ParseFiles("web/templates/base.html", "web/templates/login.html"))
@@ -87,37 +88,37 @@ func New(authH *handler.AuthHandler, fileH *handler.FileHandler, sysH *handler.S
 	indexTmpl := template.Must(template.ParseFiles("web/templates/base.html", "web/templates/index.html"))
 
 	mux.Handle("GET /{$}", wrap(func(w http.ResponseWriter, r *http.Request) {
-		indexTmpl.ExecuteTemplate(w, "index.html", nil)
+		indexTmpl.ExecuteTemplate(w,"index.html", nil)
 	}, csrfMw))
 	mux.Handle("GET /login", wrap(func(w http.ResponseWriter, r *http.Request) {
-		loginTmpl.ExecuteTemplate(w, "login.html", nil)
+		loginTmpl.ExecuteTemplate(w,"login.html", nil)
 	}, csrfMw))
 	mux.Handle("GET /register", wrap(func(w http.ResponseWriter, r *http.Request) {
-		registerTmpl.ExecuteTemplate(w, "register.html", nil)
+		registerTmpl.ExecuteTemplate(w,"register.html", nil)
 	}, csrfMw))
 
 	sharesTmpl := template.Must(template.ParseFiles("web/templates/base.html", "web/templates/shares.html"))
 	mux.Handle("GET /shares", wrap(func(w http.ResponseWriter, r *http.Request) {
-		sharesTmpl.ExecuteTemplate(w, "shares.html", nil)
+		sharesTmpl.ExecuteTemplate(w,"shares.html", nil)
 	}, csrfMw))
 
 	dashboardTmpl := template.Must(template.ParseFiles("web/templates/base.html", "web/templates/dashboard.html"))
 	mux.Handle("GET /dashboard", wrap(func(w http.ResponseWriter, r *http.Request) {
-		dashboardTmpl.ExecuteTemplate(w, "dashboard.html", nil)
+		dashboardTmpl.ExecuteTemplate(w,"dashboard.html", nil)
 	}, csrfMw))
 
 	searchTmpl := template.Must(template.ParseFiles("web/templates/base.html", "web/templates/search.html"))
 	mux.Handle("GET /search", wrap(func(w http.ResponseWriter, r *http.Request) {
-		searchTmpl.ExecuteTemplate(w, "search.html", nil)
+		searchTmpl.ExecuteTemplate(w,"search.html", nil)
 	}, csrfMw))
 
 	mux.Handle("GET /s/{token}", wrap(shareH.ServePublicPage))
 	mux.Handle("POST /s/{token}/verify", wrap(shareH.VerifyPassword, rateLimitMw))
-	mux.Handle("GET /s/{token}/download", wrap(shareH.Download))
+	mux.Handle("GET /s/{token}/download", wrap(shareH.Download, rateLimitMw))
 
 	mux.Handle("GET /d/{token}", wrap(shareH.TempDownload))
 
-	corsMw := middleware.CORS()
+	corsMw := middleware.CORS(cfg.Server.AllowedOrigins)
 	traceMw := middleware.TraceID()
 
 	var h http.Handler = mux
@@ -136,4 +137,10 @@ func wrap(handler http.HandlerFunc, mws ...middlewareFunc) http.Handler {
 		h = mws[i](h)
 	}
 	return h
+}
+
+func execTmpl(w http.ResponseWriter, r *http.Request, tmpl *template.Template, name string) {
+	if err := tmpl.ExecuteTemplate(w, name, nil); err != nil {
+		logging.Error(r.Context(), "router", "template render failed", "error", err, "template", name)
+	}
 }

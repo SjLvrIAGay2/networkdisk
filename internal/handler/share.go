@@ -75,6 +75,10 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 	share, err := h.svc.CreateShare(body.FileID, userID, body.Password, expireAt, body.MaxDownloads)
 	if err != nil {
 		if errors.Is(err, service.ErrFileNotFound) {
+			if errors.Is(err, service.ErrFolderNotAllowed) {
+				writeError(w, http.StatusBadRequest, "不支持分享文件夹")
+				return
+			}
 			writeError(w, http.StatusNotFound, "文件不存在")
 			return
 		}
@@ -83,7 +87,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.fileSvc.RecordAudit(userID, "share_create", "share", share.ID, "创建分享", middleware.ClientIP(r))
+	h.fileSvc.RecordAudit(userID, "share_create", "share", share.ID, "创建分享", middleware.ClientIP(r, ""))
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"id":            share.ID,
@@ -167,7 +171,7 @@ func (h *ShareHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.fileSvc.RecordAudit(userID, "share_delete", "share", id, "取消分享", middleware.ClientIP(r))
+	h.fileSvc.RecordAudit(userID, "share_delete", "share", id, "取消分享", middleware.ClientIP(r, ""))
 
 	writeJSON(w, http.StatusOK, map[string]string{"message": "分享已取消"})
 }
@@ -207,7 +211,7 @@ func (h *ShareHandler) VerifyPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	clientIP := middleware.ClientIP(r)
+	clientIP := middleware.ClientIP(r, "")
 	maxAttempts := h.cfg.Share.MaxPasswordAttempts
 	if maxAttempts <= 0 {
 		maxAttempts = 5
@@ -225,7 +229,7 @@ func (h *ShareHandler) VerifyPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.fileSvc.RecordAudit(0, "share_verify", "share", 0, "share:"+token, middleware.ClientIP(r))
+	h.fileSvc.RecordAudit(0, "share_verify", "share", 0, "share:"+token, middleware.ClientIP(r, ""))
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":           true,
@@ -256,6 +260,8 @@ func (h *ShareHandler) Download(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, service.ErrShareNotFound), errors.Is(err, service.ErrShareExpired):
 			writeError(w, http.StatusNotFound, "分享链接无效或已过期")
 		case errors.Is(err, service.ErrShareMaxReached):
+			case errors.Is(err, service.ErrSharePassword):
+				writeError(w, http.StatusForbidden, "需要密码验证")
 			writeError(w, http.StatusGone, "分享链接已达到下载上限")
 		default:
 			logging.Error(r.Context(), "share", "share download failed", "error", err)
@@ -280,7 +286,7 @@ func (h *ShareHandler) Download(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Disposition", "inline")
 		w.Header().Set("Content-Type", mimeType)
 	} else {
-		h.fileSvc.RecordAudit(0, "share_download", "share", 0, "share:"+token, middleware.ClientIP(r))
+		h.fileSvc.RecordAudit(0, "share_download", "share", 0, "share:"+token, middleware.ClientIP(r, ""))
 		cd := mime.FormatMediaType("attachment", map[string]string{"filename": f.Name})
 		w.Header().Set("Content-Disposition", cd)
 		w.Header().Set("Content-Type", "application/octet-stream")
@@ -346,6 +352,8 @@ func (h *ShareHandler) renderShareError(w http.ResponseWriter, r *http.Request, 
 	case errors.Is(err, service.ErrShareExpired):
 		msg = "分享链接已过期"
 	case errors.Is(err, service.ErrShareMaxReached):
+			case errors.Is(err, service.ErrSharePassword):
+				writeError(w, http.StatusForbidden, "需要密码验证")
 		msg = "分享链接已达到下载上限"
 	default:
 		msg = "服务器内部错误"

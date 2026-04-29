@@ -134,7 +134,15 @@ function batchDeleteSelected() {
         if (r.ok) {
             if (typeof refreshFiles === 'function') refreshFiles();
             showToast('已删除 ' + ids.length + ' 个文件');
+        } else {
+            r.json().then(function(data) {
+                showToast('删除失败: ' + (data.error || '未知错误'));
+            }).catch(function() {
+                showToast('删除失败');
+            });
         }
+    }).catch(function() {
+        showToast('网络错误，请重试');
     });
 }
 
@@ -143,7 +151,7 @@ var MAX_CHUNK_RETRIES = 3;
 function uploadFileChunked(file) {
     var chunkSize = 10 * 1024 * 1024;
     var totalChunks = Math.ceil(file.size / chunkSize);
-    var currentDir = typeof currentDir !== 'undefined' ? currentDir : null;
+    var targetDir = typeof currentDir !== 'undefined' ? currentDir : null;
     var uploadID = null;
     var progressDiv = createProgressItem(file.name);
 

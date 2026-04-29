@@ -47,6 +47,16 @@ function formatSize(bytes) {
 }
 (function() {
     document.getElementById('fileSizeDisplay').textContent = formatSize({{.fileSize}});
+    var params = new URLSearchParams(window.location.search);
+    var vt = params.get('verify_token');
+    if (vt) {
+        document.querySelectorAll('img[src], video source, audio source, a[href*="/download"]').forEach(function(el) {
+            var attr = el.src ? 'src' : 'href';
+            var url = new URL(el.getAttribute(attr), window.location.origin);
+            url.searchParams.set('verify_token', vt);
+            el.setAttribute(attr, url.pathname + url.search);
+        });
+    }
 })();
 </script>
 {{end}}

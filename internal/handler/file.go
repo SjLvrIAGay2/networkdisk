@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -108,7 +107,7 @@ func (h *FileHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		"mime_type": result.File.MimeType,
 		"duplicate": result.Duplicate,
 	})
-	h.svc.RecordAudit(userID, "upload", "file", result.File.ID, result.File.Name, middleware.ClientIP(r))
+	h.svc.RecordAudit(userID, "upload", "file", result.File.ID, result.File.Name, middleware.ClientIP(r, ""))
 }
 
 func (h *FileHandler) Download(w http.ResponseWriter, r *http.Request) {
@@ -146,7 +145,7 @@ func (h *FileHandler) Download(w http.ResponseWriter, r *http.Request) {
 		logging.Error(r.Context(), "file", "download copy failed", "error", err)
 		return
 	}
-	h.svc.RecordAudit(userID, "download", "file", id, f.Name, middleware.ClientIP(r))
+	h.svc.RecordAudit(userID, "download", "file", id, f.Name, middleware.ClientIP(r, ""))
 }
 
 func (h *FileHandler) Thumbnail(w http.ResponseWriter, r *http.Request) {
@@ -247,7 +246,12 @@ func (h *FileHandler) Rename(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var file *model.File
-	if body.ParentID != nil {
+	if body.ParentID != nil && body.Name != "" {
+		file, err = h.svc.MoveFile(id, body.ParentID, userID)
+		if err == nil {
+			file, err = h.svc.RenameFile(id, body.Name, userID)
+		}
+	} else if body.ParentID != nil {
 		file, err = h.svc.MoveFile(id, body.ParentID, userID)
 	} else if body.Name != "" {
 		file, err = h.svc.RenameFile(id, body.Name, userID)
@@ -301,7 +305,7 @@ func (h *FileHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"message": "已删除"})
-	h.svc.RecordAudit(userID, "delete", "file", id, "", middleware.ClientIP(r))
+	h.svc.RecordAudit(userID, "delete", "file", id, "", middleware.ClientIP(r, ""))
 }
 
 func (h *FileHandler) RecycleList(w http.ResponseWriter, r *http.Request) {
@@ -382,7 +386,7 @@ func (h *FileHandler) PermanentDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "已永久删除"})
-	h.svc.RecordAudit(userID, "permanent_delete", "file", id, "", middleware.ClientIP(r))
+	h.svc.RecordAudit(userID, "permanent_delete", "file", id, "", middleware.ClientIP(r, ""))
 }
 
 func (h *FileHandler) PermanentDeletePreview(w http.ResponseWriter, r *http.Request) {
@@ -564,17 +568,13 @@ func (h *FileHandler) DownloadZip(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "文件不存在或无法下载")
 		return
 	}
-	var buf bytes.Buffer
-	if err := h.svc.DownloadZip(ids, userID, &buf); err != nil {
-		logging.Error(r.Context(), "file", "download zip failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "服务器内部错误")
-		return
-	}
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", "attachment; filename=\"download.zip\"")
-	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
+	w.Header().Set("Transfer-Encoding", "chunked")
 	w.WriteHeader(http.StatusOK)
-	w.Write(buf.Bytes())
+	if err := h.svc.DownloadZip(ids, userID, w); err != nil {
+		logging.Error(r.Context(), "file", "download zip failed", "error", err)
+	}
 }
 
 func (h *FileHandler) InitUpload(w http.ResponseWriter, r *http.Request) {
@@ -628,6 +628,7 @@ func (h *FileHandler) UploadChunk(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "无效的分片索引")
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 20<<20)
 	file, _, err := r.FormFile("chunk")
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "请选择分片文件")
@@ -671,7 +672,7 @@ func (h *FileHandler) CompleteUpload(w http.ResponseWriter, r *http.Request) {
 		"mime_type": result.File.MimeType,
 		"duplicate": result.Duplicate,
 	})
-	h.svc.RecordAudit(userID, "upload", "file", result.File.ID, result.File.Name, middleware.ClientIP(r))
+	h.svc.RecordAudit(userID, "upload", "file", result.File.ID, result.File.Name, middleware.ClientIP(r, ""))
 }
 
 func (h *FileHandler) UploadStatus(w http.ResponseWriter, r *http.Request) {

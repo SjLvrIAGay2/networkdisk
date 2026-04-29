@@ -15,8 +15,9 @@ import (
 )
 
 var (
-	global *slog.Logger
-	mu     sync.RWMutex
+	global   *slog.Logger
+	logFile  *os.File
+	mu       sync.RWMutex
 )
 
 func Init(cfg *config.Config) error {
@@ -39,6 +40,10 @@ func Init(cfg *config.Config) error {
 		return fmt.Errorf("open log file %s: %w", filePath, err)
 	}
 
+	if logFile != nil {
+		logFile.Close()
+	}
+	logFile = f
 	writer := io.MultiWriter(os.Stdout, f)
 	opts := &slog.HandlerOptions{Level: level}
 	var handler slog.Handler
@@ -48,6 +53,17 @@ func Init(cfg *config.Config) error {
 		handler = newPatternHandler(writer, opts)
 	}
 	global = slog.New(handler)
+	return nil
+}
+
+func Close() error {
+	mu.Lock()
+	defer mu.Unlock()
+	if logFile != nil {
+		err := logFile.Close()
+		logFile = nil
+		return err
+	}
 	return nil
 }
 

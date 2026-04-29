@@ -45,11 +45,10 @@ func (s *Store) AuditLogsByUser(userID int64, action string, limit, offset int) 
 	args := []interface{}{userID}
 	if action != "" {
 		if !validAuditActions[action] {
-			action = ""
-		} else {
-			query += " AND action = ?"
-			args = append(args, action)
+			return nil, fmt.Errorf("audit logs by user: invalid action %q", action)
 		}
+		query += " AND action = ?"
+		args = append(args, action)
 	}
 	query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
 	args = append(args, limit, offset)

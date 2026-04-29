@@ -34,8 +34,9 @@ func Run(configPath string) error {
 	if err := logging.Init(cfg); err != nil {
 		return fmt.Errorf("init logging: %w", err)
 	}
+	defer logging.Close()
 
-if cfg.Auth.JWTSecret == "" {
+	if cfg.Auth.JWTSecret == "" {
 		return fmt.Errorf("auth.jwt_secret must be set")
 	}
 	if len(cfg.Auth.JWTSecret) < 32 {
@@ -60,7 +61,9 @@ if cfg.Auth.JWTSecret == "" {
 	userSvc := service.NewUserService(st, cfg)
 	thumbnailSvc := service.NewThumbnailService(fileStorage, cfg)
 	fileSvc := service.NewFileService(st, fileStorage, thumbnailSvc, cfg)
-	fileSvc.CleanupTempFiles()
+	if err := fileSvc.CleanupTempFiles(); err != nil {
+		logging.Warn(context.Background(), "background", "cleanup temp files failed", "error", err)
+	}
 
 	shareSvc := service.NewShareService(st, fileSvc, cfg)
 	searchSvc := service.NewSearchService(st)
@@ -154,12 +157,14 @@ if cfg.Auth.JWTSecret == "" {
 	select {
 	case err := <-serverErr:
 		logging.Error(context.Background(), "background", "server error", "error", err)
+		signal.Stop(quit)
 		close(reloadDone)
 		return err
 	case sig := <-quit:
 		logging.Info(context.Background(), "background", "shutting down", "signal", sig.String())
 	}
 
+	signal.Stop(quit)
 	close(reloadDone)
 
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeoutDuration())
@@ -191,10 +196,12 @@ func startDailyTimer(hourOffset int, fn func()) chan struct{} {
 			if d < 0 {
 				d = time.Hour
 			}
+			timer := time.NewTimer(d)
 			select {
-			case <-time.After(d):
+			case <-timer.C:
 				safeCall(fn)
 			case <-done:
+				timer.Stop()
 				return
 			}
 		}
@@ -206,10 +213,12 @@ func startHourlyTimer(fn func()) chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		for {
+			timer := time.NewTimer(time.Hour)
 			select {
-			case <-time.After(time.Hour):
+			case <-timer.C:
 				safeCall(fn)
 			case <-done:
+				timer.Stop()
 				return
 			}
 		}

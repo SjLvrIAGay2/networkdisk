@@ -18,7 +18,9 @@ func Recover() func(http.Handler) http.Handler {
 						"path", r.URL.Path,
 						"method", r.Method,
 					)
-					http.Error(w, `{"error":"服务器内部错误"}`, http.StatusInternalServerError)
+					w.Header().Set("Content-Type", "application/json; charset=utf-8")
+					w.WriteHeader(http.StatusInternalServerError)
+					w.Write([]byte(`{"error":"服务器内部错误"}`))
 				}
 			}()
 			next.ServeHTTP(w, r)

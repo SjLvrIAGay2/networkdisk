@@ -203,7 +203,7 @@ func (s *Store) ShareByFileID(fileID int64) (*model.Share, error) {
 	share := &model.Share{}
 	var expireAt sql.NullTime
 	err := s.DB.QueryRowContext(context.Background(),
-		"SELECT id, token, file_id, owner_id, password_hash, expire_at, max_downloads, view_count, created_at, updated_at FROM shares WHERE file_id = ?",
+		"SELECT id, token, file_id, owner_id, password_hash, expire_at, max_downloads, view_count, created_at, updated_at FROM shares WHERE file_id = ? ORDER BY created_at DESC LIMIT 1",
 		fileID,
 	).Scan(&share.ID, &share.Token, &share.FileID, &share.OwnerID, &share.PasswordHash, &expireAt, &share.MaxDownloads, &share.ViewCount, &share.CreatedAt, &share.UpdatedAt)
 	if err != nil {

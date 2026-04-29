@@ -10,6 +10,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"networkdisk/internal/config"
+	"networkdisk/internal/logging"
 )
 
 type contextKey string
@@ -24,7 +25,7 @@ func Auth(cfg *config.Config) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			header := r.Header.Get("Authorization")
 			if header == "" || !strings.HasPrefix(header, "Bearer ") {
-				http.Error(w, `{"error":"缺少授权头"}`, http.StatusUnauthorized)
+				writeJSONError(w, http.StatusUnauthorized, "缺少授权头")
 				return
 			}
 			tokenStr := strings.TrimPrefix(header, "Bearer ")
@@ -39,28 +40,37 @@ func Auth(cfg *config.Config) func(http.Handler) http.Handler {
 				jwt.WithExpirationRequired(),
 			)
 			if err != nil || !token.Valid {
-				http.Error(w, `{"error":"无效的令牌"}`, http.StatusUnauthorized)
+				writeJSONError(w, http.StatusUnauthorized, "无效的令牌")
 				return
 			}
 			claims, ok := token.Claims.(jwt.MapClaims)
 			if !ok {
-				http.Error(w, `{"error":"无效的令牌声明"}`, http.StatusUnauthorized)
+				writeJSONError(w, http.StatusUnauthorized, "无效的令牌声明")
 				return
 			}
 			sub, err := claims.GetSubject()
 			if err != nil || sub == "" {
-				http.Error(w, `{"error":"无效的令牌声明"}`, http.StatusUnauthorized)
+				writeJSONError(w, http.StatusUnauthorized, "无效的令牌声明")
 				return
 			}
 			userID, err := strconv.ParseInt(sub, 10, 64)
 			if err != nil {
-				http.Error(w, `{"error":"无效的用户标识"}`, http.StatusUnauthorized)
+				writeJSONError(w, http.StatusUnauthorized, "无效的用户标识")
 				return
 			}
-			username, _ := claims["usr"].(string)
+			username, ok := claims["usr"].(string)
+			if !ok {
+				logging.Warn(r.Context(), "auth", "username claim type assertion failed")
+			}
 			ctx := context.WithValue(r.Context(), UserIDKey, userID)
 			ctx = context.WithValue(ctx, UsernameKey, username)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+func writeJSONError(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	fmt.Fprintf(w, `{"error":%q}`, msg)
 }

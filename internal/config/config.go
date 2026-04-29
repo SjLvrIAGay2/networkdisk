@@ -15,13 +15,15 @@ import (
 )
 
 type ServerConfig struct {
-	Host             string `toml:"host"`
-	Port             int    `toml:"port"`
-	ReadTimeout      string `toml:"read_timeout"`
-	WriteTimeout     string `toml:"write_timeout"`
-	ShutdownTimeout  string `toml:"shutdown_timeout"`
-	RateLimit        int    `toml:"rate_limit"`
-	RateLimitWindow  string `toml:"rate_limit_window"`
+	Host             string   `toml:"host"`
+	Port             int      `toml:"port"`
+	ReadTimeout      string   `toml:"read_timeout"`
+	WriteTimeout     string   `toml:"write_timeout"`
+	ShutdownTimeout  string   `toml:"shutdown_timeout"`
+	RateLimit        int      `toml:"rate_limit"`
+	RateLimitWindow  string   `toml:"rate_limit_window"`
+	AllowedOrigins   []string `toml:"allowed_origins"`
+	TrustedProxy     string   `toml:"trusted_proxy"`
 }
 
 type DatabaseConfig struct {
@@ -99,9 +101,12 @@ var defaults = map[string]interface{}{
 	"server.shutdown_timeout":   "10s",
 	"server.rate_limit":         60,
 	"server.rate_limit_window":  "1m",
+	"database.host":           "127.0.0.1",
+	"database.port":           3306,
 	"database.max_open_conns": 25,
 	"database.max_idle_conns": 5,
 	"database.conn_max_lifetime": "5m",
+	"storage.root":           "./data",
 	"storage.max_file_size":    int64(100 << 20),
 	"storage.thumbnail_max_size": int64(50 << 20),
 	"storage.thumbnail_quality": 80,
@@ -322,8 +327,11 @@ func setFieldValue(field reflect.Value, value string) {
 	case reflect.String:
 		field.SetString(value)
 	case reflect.Int, reflect.Int64:
-		var ival int64
-		fmt.Sscanf(value, "%d", &ival)
+		ival, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "config: invalid int value %q, skipping\n", value)
+			return
+		}
 		field.SetInt(ival)
 	case reflect.Bool:
 		val := strings.ToLower(value)
@@ -374,7 +382,6 @@ func Reload(path string) (*Config, error) {
 	mergeReloadable(old, newCfg)
 
 	mu.Lock()
-	copyProtectedFields(old, newCfg)
 	global = newCfg
 	mu.Unlock()
 
@@ -402,28 +409,6 @@ func getNested(v reflect.Value, parts []string) reflect.Value {
 		v = v.FieldByName(fieldName(part))
 	}
 	return v
-}
-
-func copyProtectedFields(old, new *Config) {
-	if old == nil {
-		return
-	}
-	keyCopier := func(parts []string) {
-		oldField := getNested(reflect.ValueOf(old).Elem(), parts)
-		newField := getNested(reflect.ValueOf(new).Elem(), parts)
-		if oldField.IsValid() && newField.IsValid() && newField.CanSet() {
-			newField.Set(oldField)
-		}
-	}
-	keyCopier([]string{"auth", "jwt_secret"})
-	keyCopier([]string{"database", "host"})
-	keyCopier([]string{"database", "port"})
-	keyCopier([]string{"database", "user"})
-	keyCopier([]string{"database", "password"})
-	keyCopier([]string{"database", "database"})
-	keyCopier([]string{"database", "max_open_conns"})
-	keyCopier([]string{"database", "max_idle_conns"})
-	keyCopier([]string{"database", "conn_max_lifetime"})
 }
 
 func StartReloadWatcher(path string, onReload func(*Config)) chan struct{} {
@@ -458,6 +443,12 @@ func (c *Config) DSN() string {
 }
 
 func parseDuration(s string) (time.Duration, error) {
+	if s == "" {
+		return 0, fmt.Errorf("invalid duration %q: empty string", s)
+	}
+	if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return time.Duration(n) * time.Second, nil
+	}
 	var total time.Duration
 	remaining := s
 	for {
@@ -480,90 +471,59 @@ func parseDuration(s string) (time.Duration, error) {
 		}
 		total += d
 	}
-	if total == 0 {
+	if total == 0 && s != "0s" {
 		return 0, fmt.Errorf("invalid duration %q: zero duration", s)
 	}
 	return total, nil
 }
 
-func (c *Config) JWTExpireDuration() time.Duration {
-	d, err := parseDuration(c.Auth.JWTExpire)
+func durationOrDefault(field string, raw string, def time.Duration) time.Duration {
+	d, err := parseDuration(raw)
 	if err != nil {
-		d = 15 * time.Minute
+		fmt.Fprintf(os.Stderr, "config: invalid duration %s=%q, using default %v: %v\n", field, raw, def, err)
+		return def
 	}
 	return d
+}
+
+func (c *Config) JWTExpireDuration() time.Duration {
+	return durationOrDefault("auth.jwt_expire", c.Auth.JWTExpire, 15*time.Minute)
 }
 
 func (c *Config) RefreshExpireDuration() time.Duration {
-	d, err := parseDuration(c.Auth.RefreshExpire)
-	if err != nil {
-		d = 7 * 24 * time.Hour
-	}
-	return d
+	return durationOrDefault("auth.refresh_expire", c.Auth.RefreshExpire, 7*24*time.Hour)
 }
 
 func (c *Config) ReadTimeoutDuration() time.Duration {
-	d, err := parseDuration(c.Server.ReadTimeout)
-	if err != nil {
-		d = 30 * time.Second
-	}
-	return d
+	return durationOrDefault("server.read_timeout", c.Server.ReadTimeout, 30*time.Second)
 }
 
 func (c *Config) WriteTimeoutDuration() time.Duration {
-	d, err := parseDuration(c.Server.WriteTimeout)
-	if err != nil {
-		d = 60 * time.Second
-	}
-	return d
+	return durationOrDefault("server.write_timeout", c.Server.WriteTimeout, 60*time.Second)
 }
 
 func (c *Config) ShutdownTimeoutDuration() time.Duration {
-	d, err := parseDuration(c.Server.ShutdownTimeout)
-	if err != nil {
-		d = 10 * time.Second
-	}
-	return d
+	return durationOrDefault("server.shutdown_timeout", c.Server.ShutdownTimeout, 10*time.Second)
 }
 
 func (c *Config) RateLimitWindowDuration() time.Duration {
-	d, err := parseDuration(c.Server.RateLimitWindow)
-	if err != nil {
-		d = time.Minute
-	}
-	return d
+	return durationOrDefault("server.rate_limit_window", c.Server.RateLimitWindow, time.Minute)
 }
 
 func (c *Config) ConnMaxLifetimeDuration() time.Duration {
-	d, err := parseDuration(c.Database.ConnMaxLifetime)
-	if err != nil {
-		d = 5 * time.Minute
-	}
-	return d
+	return durationOrDefault("database.conn_max_lifetime", c.Database.ConnMaxLifetime, 5*time.Minute)
 }
 
 func (c *Config) ChunkCleanTimeoutDuration() time.Duration {
-	d, err := parseDuration(c.Storage.ChunkCleanTimeout)
-	if err != nil {
-		d = 24 * time.Hour
-	}
-	return d
+	return durationOrDefault("storage.chunk_clean_timeout", c.Storage.ChunkCleanTimeout, 24*time.Hour)
 }
 
 func (c *Config) TempLinkTTLDuration() time.Duration {
-	d, err := parseDuration(c.Storage.TempLinkTTL)
-	if err != nil {
-		d = time.Hour
-	}
-	return d
+	return durationOrDefault("storage.temp_link_ttl", c.Storage.TempLinkTTL, time.Hour)
 }
 
 func (c *Config) SharePasswordRateLimitResetDuration() time.Duration {
-	d, err := parseDuration(c.Share.PasswordRateLimitReset)
-	if err != nil {
-		d = 15 * time.Minute
-	}
-	return d
+	return durationOrDefault("share.password_rate_limit_reset", c.Share.PasswordRateLimitReset, 15*time.Minute)
 }
 
 func (c *Config) ShareBcryptCost() int {

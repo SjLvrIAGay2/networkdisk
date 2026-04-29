@@ -1,7 +1,9 @@
 package middleware
 
 import (
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -9,52 +11,40 @@ import (
 	"networkdisk/internal/logging"
 )
 
-type rateBucket struct {
-	requests []time.Time
+type RateLimiter struct {
+	mu       sync.Mutex
+	visitors map[string]*visitor
+	limit    int
+	window   time.Duration
+	stopCh   chan struct{}
 }
 
-type RateLimiter struct {
-	mu      sync.Mutex
-	buckets map[string]*rateBucket
-	limit   int
-	window  time.Duration
-	stopCh  chan struct{}
+type visitor struct {
+	count    int
+	resetAt  time.Time
 }
 
 func NewRateLimiter(limit int, window time.Duration) *RateLimiter {
 	rl := &RateLimiter{
-		buckets: make(map[string]*rateBucket),
-		limit:   limit,
-		window:  window,
-		stopCh:  make(chan struct{}),
+		visitors: make(map[string]*visitor),
+		limit:    limit,
+		window:   window,
 	}
-	go rl.cleanupLoop()
+	go rl.cleanup()
 	return rl
 }
 
-func (rl *RateLimiter) Stop() {
-	close(rl.stopCh)
-}
-
-func (rl *RateLimiter) cleanupLoop() {
+func (rl *RateLimiter) cleanup() {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
 			rl.mu.Lock()
-			cutoff := time.Now().Add(-rl.window)
-			for ip, bucket := range rl.buckets {
-				idx := 0
-				for _, t := range bucket.requests {
-					if t.After(cutoff) {
-						break
-					}
-					idx++
-				}
-				bucket.requests = bucket.requests[idx:]
-				if len(bucket.requests) == 0 {
-					delete(rl.buckets, ip)
+			now := time.Now()
+			for k, v := range rl.visitors {
+				if now.After(v.resetAt) {
+					delete(rl.visitors, k)
 				}
 			}
 			rl.mu.Unlock()
@@ -64,39 +54,37 @@ func (rl *RateLimiter) cleanupLoop() {
 	}
 }
 
-func (rl *RateLimiter) Allow(key string) bool {
+func (rl *RateLimiter) Allow(host string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 	now := time.Now()
-	cutoff := now.Add(-rl.window)
-	bucket, exists := rl.buckets[key]
-	if !exists {
-		bucket = &rateBucket{}
-		rl.buckets[key] = bucket
+	v, ok := rl.visitors[host]
+	if !ok || now.After(v.resetAt) {
+		rl.visitors[host] = &visitor{count: 1, resetAt: now.Add(rl.window)}
+		return true
 	}
-	idx := 0
-	for _, t := range bucket.requests {
-		if t.After(cutoff) {
-			break
-		}
-		idx++
-	}
-	bucket.requests = bucket.requests[idx:]
-	if len(bucket.requests) >= rl.limit {
+	if v.count >= rl.limit {
 		return false
 	}
-	bucket.requests = append(bucket.requests, now)
+	v.count++
 	return true
 }
 
-func RateLimit(limit int, window time.Duration) (func(http.Handler) http.Handler, func()) {
+func (rl *RateLimiter) Stop() {
+	close(rl.stopCh)
+}
+
+func RateLimit(limit int, window time.Duration, trustedProxy string) (func(http.Handler) http.Handler, func()) {
 	rl := NewRateLimiter(limit, window)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			host := ClientIP(r)
+			host := ClientIP(r, trustedProxy)
 			if !rl.Allow(host) {
 				logging.Warn(r.Context(), "ratelimit", "rate limited", "remote", host, "path", r.URL.Path)
-				http.Error(w, `{"error":"请求过于频繁，请稍后重试"}`, http.StatusTooManyRequests)
+				w.Header().Set("Retry-After", strconv.Itoa(int(window.Seconds())))
+				w.Header().Set("Content-Type", "application/json; charset=utf-8")
+				w.WriteHeader(http.StatusTooManyRequests)
+				w.Write([]byte(`{"error":"请求过于频繁，请稍后重试"}`))
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -104,21 +92,33 @@ func RateLimit(limit int, window time.Duration) (func(http.Handler) http.Handler
 	}, rl.Stop
 }
 
-func ClientIP(r *http.Request) string {
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return strings.TrimSpace(xri)
+func ClientIP(r *http.Request, trustedProxy string) string {
+	remoteHost, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if remoteHost == "" {
+		remoteHost = r.RemoteAddr
 	}
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		idx := strings.IndexByte(xff, ',')
-		if idx > 0 {
-			return strings.TrimSpace(xff[:idx])
+	if isTrustedRemote(remoteHost, trustedProxy) {
+		if xri := r.Header.Get("X-Real-IP"); xri != "" {
+			return strings.TrimSpace(xri)
 		}
-		return strings.TrimSpace(xff)
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			idx := strings.IndexByte(xff, ',')
+			if idx > 0 {
+				return strings.TrimSpace(xff[:idx])
+			}
+			return strings.TrimSpace(xff)
+		}
 	}
-	host := r.RemoteAddr
-	idx := strings.LastIndexByte(host, ':')
-	if idx > 0 {
-		return host[:idx]
+	return remoteHost
+}
+
+func isTrustedRemote(remote, trustedProxy string) bool {
+	if trustedProxy != "" && remote == trustedProxy {
+		return true
 	}
-	return host
+	ip := net.ParseIP(remote)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate()
 }

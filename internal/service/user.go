@@ -114,9 +114,25 @@ func (svc *UserService) Login(in LoginInput) (*model.User, *TokenPair, error) {
 		if in.TOTPCode == "" {
 			return user, nil, ErrTOTPRequired
 		}
+		svc.totpMu.Lock()
+		attempt, _ := svc.totpAttempts[user.ID]
+		if time.Now().After(attempt.resetAt) {
+			attempt = totpAttempt{resetAt: time.Now().Add(15 * time.Minute)}
+		}
+		if attempt.count >= 5 {
+			svc.totpAttempts[user.ID] = attempt
+			svc.totpMu.Unlock()
+			return nil, nil, fmt.Errorf("两步验证尝试次数过多，请15分钟后重试")
+		}
+		attempt.count++
+		svc.totpAttempts[user.ID] = attempt
+		svc.totpMu.Unlock()
 		if !totp.Validate(in.TOTPCode, user.TOTPSecret) {
 			return nil, nil, ErrInvalidTOTP
 		}
+		svc.totpMu.Lock()
+		delete(svc.totpAttempts, user.ID)
+		svc.totpMu.Unlock()
 	}
 	tokens, err := svc.issueTokens(user)
 	if err != nil {
@@ -191,7 +207,7 @@ func (svc *UserService) Logout(refreshToken string) error {
 	tokenHash := hashToken(refreshToken)
 	rt, err := svc.store.RefreshTokenByHash(tokenHash)
 	if err != nil {
-		return nil
+		return fmt.Errorf("logout lookup token: %w", err)
 	}
 	if err := svc.store.RevokeRefreshToken(rt.ID); err != nil {
 		return fmt.Errorf("logout revoke: %w", err)

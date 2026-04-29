@@ -44,7 +44,7 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		"id":       user.ID,
 		"username": user.Username,
 	})
-	h.fileSvc.RecordAudit(user.ID, "register", "user", user.ID, user.Username, middleware.ClientIP(r))
+	h.fileSvc.RecordAudit(user.ID, "register", "user", user.ID, user.Username, middleware.ClientIP(r, ""))
 }
 
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
@@ -66,7 +66,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if errors.Is(err, service.ErrInvalidCredentials) || errors.Is(err, service.ErrInvalidTOTP) {
-			logging.Warn(r.Context(), "auth", "login failed", "username", in.Username, "remote", middleware.ClientIP(r))
+			logging.Warn(r.Context(), "auth", "login failed", "username", in.Username, "remote", middleware.ClientIP(r, ""))
 			writeError(w, http.StatusUnauthorized, "用户名或密码错误或两步验证码无效")
 			return
 		}
@@ -98,7 +98,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		"expires_in":   tokens.ExpiresIn,
 		"csrf_token":   tokens.CSRFToken,
 	})
-	h.fileSvc.RecordAudit(user.ID, "login", "user", user.ID, user.Username, middleware.ClientIP(r))
+	h.fileSvc.RecordAudit(user.ID, "login", "user", user.ID, user.Username, middleware.ClientIP(r, ""))
 }
 
 func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
@@ -176,7 +176,7 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	user, tokens, err := h.svc.RefreshAccessToken(cookie.Value)
 	if err != nil {
 		if errors.Is(err, service.ErrTokenRevoked) {
-			logging.Warn(r.Context(), "auth", "refresh token revoked", "remote", middleware.ClientIP(r))
+			logging.Warn(r.Context(), "auth", "refresh token revoked", "remote", middleware.ClientIP(r, ""))
 			http.SetCookie(w, &http.Cookie{
 				Name:     "refresh_token",
 				Value:    "",
@@ -189,8 +189,8 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusUnauthorized, "令牌已吊销，可能存在安全风险")
 			return
 		}
-		if errors.Is(err, service.ErrTokenExpired) {
-			writeError(w, http.StatusUnauthorized, "刷新令牌已过期")
+		if errors.Is(err, service.ErrTokenExpired) || errors.Is(err, service.ErrInvalidCredentials) {
+			writeError(w, http.StatusUnauthorized, "刷新令牌无效或已过期")
 			return
 		}
 		logging.Error(r.Context(), "auth", "refresh token failed", "error", err)
@@ -262,7 +262,7 @@ func (h *AuthHandler) VerifyTOTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "验证码无效")
 		return
 	}
-	h.fileSvc.RecordAudit(userID, "totp_enable", "user", userID, "开启两步验证", middleware.ClientIP(r))
+	h.fileSvc.RecordAudit(userID, "totp_enable", "user", userID, "开启两步验证", middleware.ClientIP(r, ""))
 	writeJSON(w, http.StatusOK, map[string]string{"message": "两步验证已开启"})
 }
 
@@ -287,7 +287,7 @@ func (h *AuthHandler) DisableTOTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "验证码无效")
 		return
 	}
-	h.fileSvc.RecordAudit(userID, "totp_disable", "user", userID, "关闭两步验证", middleware.ClientIP(r))
+	h.fileSvc.RecordAudit(userID, "totp_disable", "user", userID, "关闭两步验证", middleware.ClientIP(r, ""))
 	writeJSON(w, http.StatusOK, map[string]string{"message": "两步验证已关闭"})
 }
 

@@ -51,6 +51,9 @@ func (h *SystemHandler) AuditLogs(w http.ResponseWriter, r *http.Request) {
 	if err != nil || offset < 0 {
 		offset = 0
 	}
+	if offset > 100000 {
+		offset = 100000
+	}
 	logs, err := h.fileSvc.AuditLogs(userID, action, limit, offset)
 	if err != nil {
 		logging.Error(r.Context(), "system", "audit logs failed", "error", err)

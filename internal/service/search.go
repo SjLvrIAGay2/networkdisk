@@ -38,9 +38,11 @@ func (svc *SearchService) Suggest(userID int64, query string) ([]string, error) 
 	if len(query) < 2 {
 		return []string{}, nil
 	}
+	escaped := strings.ReplaceAll(strings.ReplaceAll(query, "\\", "\\\\"), "%", "\\%")
+	escaped = strings.ReplaceAll(escaped, "_", "\\_")
 	rows, err := svc.store.DB.QueryContext(context.Background(),
-		"SELECT DISTINCT name FROM files WHERE user_id = ? AND is_deleted = 0 AND name LIKE ? ORDER BY name LIMIT 10",
-		userID, "%"+query+"%",
+		"SELECT DISTINCT name FROM files WHERE user_id = ? AND is_deleted = 0 AND name LIKE ? ESCAPE '\\' ORDER BY name LIMIT 10",
+		userID, "%"+escaped+"%",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("search suggest: %w", err)
@@ -72,9 +74,11 @@ func (svc *SearchService) fulltextSearch(userID int64, query string) ([]*model.F
 }
 
 func (svc *SearchService) likeSearch(userID int64, query string) ([]*model.File, error) {
-	pattern := "%" + query + "%"
+	escaped := strings.ReplaceAll(strings.ReplaceAll(query, "\\", "\\\\"), "%", "\\%")
+	escaped = strings.ReplaceAll(escaped, "_", "\\_")
+	pattern := "%" + escaped + "%"
 	rows, err := svc.store.DB.QueryContext(context.Background(),
-		"SELECT id, user_id, parent_id, name, is_dir, size, file_hash, storage_key, thumbnail_key, mime_type, is_starred, is_deleted, deleted_at, created_at, updated_at FROM files WHERE user_id = ? AND is_deleted = 0 AND name LIKE ? ORDER BY is_dir DESC, name LIMIT 100",
+		"SELECT id, user_id, parent_id, name, is_dir, size, file_hash, storage_key, thumbnail_key, mime_type, is_starred, is_deleted, deleted_at, created_at, updated_at FROM files WHERE user_id = ? AND is_deleted = 0 AND name LIKE ? ESCAPE '\\' ORDER BY is_dir DESC, name LIMIT 100",
 		userID, pattern,
 	)
 	if err != nil {

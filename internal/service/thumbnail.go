@@ -1,10 +1,12 @@
 package service
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"image/png"
+	"io"
 	"os"
-	"context"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -142,8 +144,11 @@ func (ts *ThumbnailService) extractVideoFrame(storageKey string) (string, error)
 		return "", fmt.Errorf("ffmpeg start: %w", err)
 	}
 
-	frame, err := png.Decode(stdout)
+	var buf bytes.Buffer
+	tee := io.TeeReader(stdout, &buf)
+	frame, err := png.Decode(tee)
 	if err != nil {
+		go io.Copy(io.Discard, stdout)
 		cmd.Wait()
 		return "", fmt.Errorf("ffmpeg png decode: %w", err)
 	}

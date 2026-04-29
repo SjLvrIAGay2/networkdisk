@@ -368,7 +368,12 @@ func (s *Store) ToggleStar(id int64) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("切换收藏：%w", err)
 	}
-	result, err := s.DB.ExecContext(context.Background(), "UPDATE files SET is_starred = NOT is_starred WHERE id = ?", id)
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return false, fmt.Errorf("切换收藏：%w", err)
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(context.Background(), "UPDATE files SET is_starred = NOT is_starred WHERE id = ?", id)
 	if err != nil {
 		return false, fmt.Errorf("切换收藏更新：%w", err)
 	}
@@ -380,9 +385,12 @@ func (s *Store) ToggleStar(id int64) (bool, error) {
 		return false, fmt.Errorf("切换收藏：文件不存在")
 	}
 	var starred bool
-	err = s.DB.QueryRowContext(context.Background(), "SELECT is_starred FROM files WHERE id = ?", id).Scan(&starred)
+	err = tx.QueryRowContext(context.Background(), "SELECT is_starred FROM files WHERE id = ?", id).Scan(&starred)
 	if err != nil {
 		return false, fmt.Errorf("切换收藏查询结果：%w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("切换收藏提交：%w", err)
 	}
 	return starred, nil
 }
@@ -730,15 +738,21 @@ func (s *Store) HardDeleteFiles(ids []int64) error {
 	}
 	placeholders, args := buildHardDeletePlaceholders(ids)
 	query := fmt.Sprintf("DELETE FROM files WHERE id IN (%s)", strings.Join(placeholders, ","))
-	if _, err := s.DB.ExecContext(context.Background(), "SET FOREIGN_KEY_CHECKS = 0"); err != nil {
-		return fmt.Errorf("批量永久删除：%w", err)
-	}
-	defer s.DB.ExecContext(context.Background(), "SET FOREIGN_KEY_CHECKS = 1")
-	_, err := s.DB.ExecContext(context.Background(), query, args...)
+	tx, err := s.DB.Begin()
 	if err != nil {
 		return fmt.Errorf("批量永久删除：%w", err)
 	}
-	return nil
+	defer tx.Rollback()
+	if _, err := tx.Exec("SET FOREIGN_KEY_CHECKS = 0"); err != nil {
+		return fmt.Errorf("批量永久删除：%w", err)
+	}
+	if _, err := tx.Exec(query, args...); err != nil {
+		return fmt.Errorf("批量永久删除：%w", err)
+	}
+	if _, err := tx.Exec("SET FOREIGN_KEY_CHECKS = 1"); err != nil {
+		return fmt.Errorf("批量永久删除：%w", err)
+	}
+	return tx.Commit()
 }
 
 func (tx *Tx) HardDeleteFiles(ids []int64) error {
@@ -750,9 +764,11 @@ func (tx *Tx) HardDeleteFiles(ids []int64) error {
 	if _, err := tx.Tx.ExecContext(context.Background(), "SET FOREIGN_KEY_CHECKS = 0"); err != nil {
 		return fmt.Errorf("批量永久删除：%w", err)
 	}
-	defer tx.Tx.ExecContext(context.Background(), "SET FOREIGN_KEY_CHECKS = 1")
-	_, err := tx.Tx.ExecContext(context.Background(), query, args...)
-	if err != nil {
+	if _, err := tx.Tx.ExecContext(context.Background(), query, args...); err != nil {
+		tx.Tx.ExecContext(context.Background(), "SET FOREIGN_KEY_CHECKS = 1")
+		return fmt.Errorf("批量永久删除：%w", err)
+	}
+	if _, err := tx.Tx.ExecContext(context.Background(), "SET FOREIGN_KEY_CHECKS = 1"); err != nil {
 		return fmt.Errorf("批量永久删除：%w", err)
 	}
 	return nil
@@ -762,8 +778,8 @@ func buildHardDeletePlaceholders(ids []int64) ([]string, []interface{}) {
 	placeholders := make([]string, len(ids))
 	args := make([]interface{}, len(ids))
 	for i, id := range ids {
-		placeholders[len(ids)-1-i] = "?"
-		args[len(ids)-1-i] = id
+		placeholders[i] = "?"
+		args[i] = id
 	}
 	return placeholders, args
 }

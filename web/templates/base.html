@@ -174,7 +174,7 @@
         <a href="/" class="navbar-brand">NetworkDisk</a>
         <div class="navbar-nav">
             {{block "nav-right" .}}
-            <button id="themeToggle" class="theme-toggle" onclick="toggleTheme()">🌙</button>
+            <button id="themeToggle" class="theme-toggle" type="button" onclick="toggleTheme()">🌙</button>
             {{end}}
         </div>
     </nav>
@@ -295,7 +295,7 @@
         }
 
         function escapeJsAttr(str) {
-            return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/</g, '\\x3c');
+            return str.replace(/&/g, '\\x26').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/</g, '\\x3c');
         }
 
         function downloadFile(id, name) {

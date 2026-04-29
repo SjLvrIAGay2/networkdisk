@@ -42,6 +42,7 @@ var (
 	ErrShareExpired     = errors.New("分享链接已过期")
 	ErrShareMaxReached  = errors.New("分享链接已达到下载上限")
 	ErrSharePassword    = errors.New("分享密码错误")
+	ErrFolderNotAllowed = errors.New("不支持分享文件夹")
 	ErrTooManyAttempts  = errors.New("密码尝试次数过多")
 )
 
@@ -71,7 +72,7 @@ func (svc *ShareService) CreateShare(fileID int64, ownerID int64, password strin
 		return nil, ErrFileNotFound
 	}
 	if f.IsDir {
-		return nil, fmt.Errorf("不支持分享文件夹")
+		return nil, ErrFolderNotAllowed
 	}
 
 	token, err := generateShareToken()
