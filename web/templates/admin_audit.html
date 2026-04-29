@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html>
+{{define "title"}}操作日志 - NetworkDisk{{end}}
+{{define "nav-right"}}
+    <a href="/dashboard">仪表盘</a>
+    <button id="themeToggle" class="theme-toggle" type="button" onclick="toggleTheme()">🌙</button>
+{{end}}
+{{define "sidebar"}}
+    <a href="/">首页</a>
+    <a href="/dashboard">仪表盘</a>
+    <a href="/shares">分享管理</a>
+    <a href="/recycle">回收站</a>
+    <a href="/search">搜索</a>
+    <a href="/audit">操作日志</a>
+{{end}}
+{{define "content"}}
+<div class="card">
+    <h2 style="font-size:20px;font-weight:600;margin-bottom:20px;">操作日志</h2>
+    <div style="display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap;">
+        <select id="actionFilter" onchange="loadAuditLogs()" style="padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);">
+            <option value="">全部操作</option>
+            <option value="upload">上传</option>
+            <option value="download">下载</option>
+            <option value="delete">删除</option>
+            <option value="permanent_delete">永久删除</option>
+            <option value="share_create">创建分享</option>
+            <option value="share_delete">删除分享</option>
+            <option value="share_download">分享下载</option>
+            <option value="share_verify">分享验证</option>
+            <option value="register">注册</option>
+            <option value="login">登录</option>
+            <option value="totp_enable">开启两步验证</option>
+            <option value="totp_disable">关闭两步验证</option>
+        </select>
+        <input type="date" id="startDate" onchange="loadAuditLogs()" style="padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);">
+        <input type="date" id="endDate" onchange="loadAuditLogs()" style="padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);">
+    </div>
+    <div id="auditTable" style="overflow-x:auto;">
+        <div class="loading" id="auditLoading">加载中...</div>
+        <div class="empty-state" id="auditEmpty" style="display:none;">暂无操作日志</div>
+        <table style="width:100%;border-collapse:collapse;display:none;" id="auditTableEl">
+            <thead>
+                <tr style="border-bottom:1px solid var(--border);text-align:left;">
+                    <th style="padding:8px;font-size:13px;color:var(--text-secondary);">时间</th>
+                    <th style="padding:8px;font-size:13px;color:var(--text-secondary);">操作</th>
+                    <th style="padding:8px;font-size:13px;color:var(--text-secondary);">对象</th>
+                    <th style="padding:8px;font-size:13px;color:var(--text-secondary);">详情</th>
+                    <th style="padding:8px;font-size:13px;color:var(--text-secondary);">IP</th>
+                </tr>
+            </thead>
+            <tbody id="auditTbody"></tbody>
+        </table>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:16px;">
+        <span style="font-size:13px;color:var(--text-secondary);" id="pageInfo"></span>
+        <div style="display:flex;gap:8px;">
+            <button class="btn btn-primary" onclick="prevPage()" id="prevBtn" disabled>上一页</button>
+            <button class="btn btn-primary" onclick="nextPage()" id="nextBtn" disabled>下一页</button>
+        </div>
+    </div>
+</div>
+
+<div class="card" style="margin-top:20px;">
+    <h2 style="font-size:20px;font-weight:600;margin-bottom:20px;">登录设备管理</h2>
+    <div id="deviceList">
+        <div class="loading" id="deviceLoading">加载中...</div>
+        <div class="empty-state" id="deviceEmpty" style="display:none;">暂无可管理设备</div>
+        <div id="deviceTable" style="display:none;"></div>
+    </div>
+</div>
+{{end}}
+{{define "scripts"}}
+<script>
+(function() {
+    var currentPage = 0;
+    var pageSize = 20;
+    var totalCount = 0;
+
+    function actionLabel(action) {
+        var labels = {
+            'upload': '上传', 'download': '下载', 'delete': '删除',
+            'permanent_delete': '永久删除', 'share_create': '创建分享',
+            'share_delete': '删除分享', 'share_download': '分享下载',
+            'share_verify': '分享验证', 'register': '注册', 'login': '登录',
+            'totp_enable': '开启两步验证', 'totp_disable': '关闭两步验证'
+        };
+        return labels[action] || action;
+    }
+
+    window.loadAuditLogs = function() {
+        document.getElementById('auditLoading').style.display = 'block';
+        document.getElementById('auditEmpty').style.display = 'none';
+        document.getElementById('auditTableEl').style.display = 'none';
+        var params = new URLSearchParams();
+        params.set('limit', pageSize.toString());
+        params.set('offset', (currentPage * pageSize).toString());
+        var action = document.getElementById('actionFilter').value;
+        if (action) params.set('action', action);
+        var start = document.getElementById('startDate').value;
+        if (start) params.set('start', start);
+        var end = document.getElementById('endDate').value;
+        if (end) params.set('end', end + 'T23:59:59');
+        apiFetch('/api/audit-logs?' + params.toString()).then(function(r) {
+            if (!r.ok) throw new Error('API error');
+            return r.json();
+        }).then(function(data) {
+            document.getElementById('auditLoading').style.display = 'none';
+            var logs = data.logs || [];
+            if (logs.length === 0) {
+                document.getElementById('auditEmpty').style.display = 'block';
+                document.getElementById('prevBtn').disabled = true;
+                document.getElementById('nextBtn').disabled = true;
+                document.getElementById('pageInfo').textContent = '';
+                return;
+            }
+            var tbody = document.getElementById('auditTbody');
+            tbody.innerHTML = '';
+            logs.forEach(function(l) {
+                var tr = document.createElement('tr');
+                tr.style.borderBottom = '1px solid var(--border)';
+                tr.innerHTML = '<td style="padding:8px;font-size:13px;">' + escapeHtml(l.created_at) + '</td>' +
+                    '<td style="padding:8px;font-size:13px;">' + escapeHtml(actionLabel(l.action)) + '</td>' +
+                    '<td style="padding:8px;font-size:13px;">' + escapeHtml(l.target_type + ' #' + l.target_id) + '</td>' +
+                    '<td style="padding:8px;font-size:13px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(l.detail) + '</td>' +
+                    '<td style="padding:8px;font-size:13px;">' + escapeHtml(l.ip) + '</td>';
+                tbody.appendChild(tr);
+            });
+            document.getElementById('auditTableEl').style.display = 'table';
+            document.getElementById('prevBtn').disabled = currentPage === 0;
+            document.getElementById('nextBtn').disabled = logs.length < pageSize;
+            document.getElementById('pageInfo').textContent = '第 ' + (currentPage + 1) + ' 页';
+        }).catch(function(e) {
+            document.getElementById('auditLoading').style.display = 'none';
+            document.getElementById('auditEmpty').textContent = '加载失败：' + e.message;
+            document.getElementById('auditEmpty').style.display = 'block';
+        });
+    };
+
+    window.prevPage = function() {
+        if (currentPage > 0) { currentPage--; loadAuditLogs(); }
+    };
+    window.nextPage = function() {
+        currentPage++; loadAuditLogs();
+    };
+
+    function loadDevices() {
+        document.getElementById('deviceLoading').style.display = 'block';
+        apiFetch('/api/devices').then(function(r) {
+            if (!r.ok) throw new Error('API error');
+            return r.json();
+        }).then(function(data) {
+            document.getElementById('deviceLoading').style.display = 'none';
+            var devices = data.devices || [];
+            if (devices.length === 0) {
+                document.getElementById('deviceEmpty').style.display = 'block';
+                return;
+            }
+            var container = document.getElementById('deviceTable');
+            var html = '';
+            devices.forEach(function(d, i) {
+                html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:12px;border:1px solid var(--border);border-radius:6px;margin-bottom:8px;">' +
+                    '<div><div style="font-weight:500;">设备 ' + (i + 1) + '</div><div style="font-size:12px;color:var(--text-secondary);">登录时间：' + escapeHtml(d.created_at) + '</div></div>' +
+                    '<button class="btn" style="background:var(--danger);color:#fff;" onclick="revokeDevice(\'' + escapeJsAttr(d.family_id) + '\')">吊销</button></div>';
+            });
+            container.innerHTML = html;
+            container.style.display = 'block';
+        }).catch(function(e) {
+            document.getElementById('deviceLoading').style.display = 'none';
+            document.getElementById('deviceEmpty').textContent = '加载失败：' + e.message;
+            document.getElementById('deviceEmpty').style.display = 'block';
+        });
+    }
+
+    window.revokeDevice = function(familyId) {
+        if (!confirm('确认吊销此设备？该设备上的所有会话将失效。')) return;
+        apiFetch('/api/auth/logout/' + encodeURIComponent(familyId), {
+            method: 'POST',
+            headers: { 'X-CSRF-Token': getCSRFToken() }
+        }).then(function(r) {
+            if (r.ok) {
+                showToast('设备已吊销');
+                loadDevices();
+            } else {
+                r.json().then(function(d) { showToast(d.error || '操作失败'); }).catch(function() { showToast('操作失败'); });
+            }
+        }).catch(function() {
+            showToast('网络错误');
+        });
+    };
+
+    loadAuditLogs();
+    loadDevices();
+})();
+</script>
+{{end}}
+</html>

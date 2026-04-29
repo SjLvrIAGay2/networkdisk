@@ -6,7 +6,6 @@ import (
 
 	"networkdisk/internal/config"
 	"networkdisk/internal/handler"
-	"networkdisk/internal/logging"
 	"networkdisk/internal/middleware"
 )
 
@@ -32,6 +31,7 @@ func New(authH *handler.AuthHandler, fileH *handler.FileHandler, sysH *handler.S
 	mux.Handle("POST /api/auth/totp/enable", wrap(authH.EnableTOTP, authMw, csrfMw))
 	mux.Handle("POST /api/auth/totp/verify", wrap(authH.VerifyTOTP, authMw, csrfMw))
 	mux.Handle("POST /api/auth/totp/disable", wrap(authH.DisableTOTP, authMw, csrfMw))
+	mux.Handle("POST /api/auth/logout/{device}", wrap(sysH.LogoutDevice, authMw, csrfMw))
 
 	mux.Handle("GET /api/files", wrap(fileH.List, authMw))
 	mux.Handle("POST /api/files/upload", wrap(fileH.Upload, authMw, csrfMw))
@@ -75,12 +75,14 @@ func New(authH *handler.AuthHandler, fileH *handler.FileHandler, sysH *handler.S
 	mux.Handle("GET /api/shares", wrap(shareH.List, authMw))
 	mux.Handle("DELETE /api/shares/{id}", wrap(shareH.Delete, authMw, csrfMw))
 
+	mux.Handle("GET /api/health", wrap(sysH.Health))
 	mux.Handle("GET /api/stats", wrap(sysH.StorageStats, authMw))
 	mux.Handle("GET /api/audit-logs", wrap(sysH.AuditLogs, authMw))
+	mux.Handle("GET /api/devices", wrap(sysH.Devices, authMw))
 
 	recycleTmpl := template.Must(template.ParseFiles("web/templates/base.html", "web/templates/recycle.html"))
 	mux.Handle("GET /recycle", wrap(func(w http.ResponseWriter, r *http.Request) {
-		recycleTmpl.ExecuteTemplate(w,"recycle.html", nil)
+		recycleTmpl.ExecuteTemplate(w, "recycle.html", nil)
 	}, csrfMw))
 
 	loginTmpl := template.Must(template.ParseFiles("web/templates/base.html", "web/templates/login.html"))
@@ -88,28 +90,33 @@ func New(authH *handler.AuthHandler, fileH *handler.FileHandler, sysH *handler.S
 	indexTmpl := template.Must(template.ParseFiles("web/templates/base.html", "web/templates/index.html"))
 
 	mux.Handle("GET /{$}", wrap(func(w http.ResponseWriter, r *http.Request) {
-		indexTmpl.ExecuteTemplate(w,"index.html", nil)
+		indexTmpl.ExecuteTemplate(w, "index.html", nil)
 	}, csrfMw))
 	mux.Handle("GET /login", wrap(func(w http.ResponseWriter, r *http.Request) {
-		loginTmpl.ExecuteTemplate(w,"login.html", nil)
+		loginTmpl.ExecuteTemplate(w, "login.html", nil)
 	}, csrfMw))
 	mux.Handle("GET /register", wrap(func(w http.ResponseWriter, r *http.Request) {
-		registerTmpl.ExecuteTemplate(w,"register.html", nil)
+		registerTmpl.ExecuteTemplate(w, "register.html", nil)
 	}, csrfMw))
 
 	sharesTmpl := template.Must(template.ParseFiles("web/templates/base.html", "web/templates/shares.html"))
 	mux.Handle("GET /shares", wrap(func(w http.ResponseWriter, r *http.Request) {
-		sharesTmpl.ExecuteTemplate(w,"shares.html", nil)
+		sharesTmpl.ExecuteTemplate(w, "shares.html", nil)
 	}, csrfMw))
 
 	dashboardTmpl := template.Must(template.ParseFiles("web/templates/base.html", "web/templates/dashboard.html"))
 	mux.Handle("GET /dashboard", wrap(func(w http.ResponseWriter, r *http.Request) {
-		dashboardTmpl.ExecuteTemplate(w,"dashboard.html", nil)
+		dashboardTmpl.ExecuteTemplate(w, "dashboard.html", nil)
 	}, csrfMw))
 
 	searchTmpl := template.Must(template.ParseFiles("web/templates/base.html", "web/templates/search.html"))
 	mux.Handle("GET /search", wrap(func(w http.ResponseWriter, r *http.Request) {
-		searchTmpl.ExecuteTemplate(w,"search.html", nil)
+		searchTmpl.ExecuteTemplate(w, "search.html", nil)
+	}, csrfMw))
+
+	auditTmpl := template.Must(template.ParseFiles("web/templates/base.html", "web/templates/admin_audit.html"))
+	mux.Handle("GET /audit", wrap(func(w http.ResponseWriter, r *http.Request) {
+		auditTmpl.ExecuteTemplate(w, "admin_audit.html", nil)
 	}, csrfMw))
 
 	mux.Handle("GET /s/{token}", wrap(shareH.ServePublicPage))
@@ -117,6 +124,8 @@ func New(authH *handler.AuthHandler, fileH *handler.FileHandler, sysH *handler.S
 	mux.Handle("GET /s/{token}/download", wrap(shareH.Download, rateLimitMw))
 
 	mux.Handle("GET /d/{token}", wrap(shareH.TempDownload))
+
+	middleware.LoadErrorPages()
 
 	corsMw := middleware.CORS(cfg.Server.AllowedOrigins)
 	traceMw := middleware.TraceID()
@@ -126,7 +135,41 @@ func New(authH *handler.AuthHandler, fileH *handler.FileHandler, sysH *handler.S
 	h = recoverMw(h)
 	h = loggerMw(h)
 	h = traceMw(h)
+	h = middleware.SecurityHeaders()(h)
+	h = notFoundWrapper(h)
 	return h, stopRateLimiter
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status     int
+	suppressed bool
+}
+
+func (s *statusRecorder) WriteHeader(status int) {
+	s.status = status
+	if status == http.StatusNotFound {
+		s.suppressed = true
+		return
+	}
+	s.ResponseWriter.WriteHeader(status)
+}
+
+func (s *statusRecorder) Write(b []byte) (int, error) {
+	if s.suppressed {
+		return len(b), nil
+	}
+	return s.ResponseWriter.Write(b)
+}
+
+func notFoundWrapper(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sr := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(sr, r)
+		if sr.suppressed {
+			middleware.NotFoundHandler().ServeHTTP(w, r)
+		}
+	})
 }
 
 type middlewareFunc func(http.Handler) http.Handler
@@ -139,8 +182,3 @@ func wrap(handler http.HandlerFunc, mws ...middlewareFunc) http.Handler {
 	return h
 }
 
-func execTmpl(w http.ResponseWriter, r *http.Request, tmpl *template.Template, name string) {
-	if err := tmpl.ExecuteTemplate(w, name, nil); err != nil {
-		logging.Error(r.Context(), "router", "template render failed", "error", err, "template", name)
-	}
-}

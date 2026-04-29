@@ -361,6 +361,62 @@ func (s *Store) RevokeUserTokens(userID int64) error {
 	return nil
 }
 
+func (s *Store) DistinctDeviceFamilies(userID int64) ([]*model.RefreshToken, error) {
+	if userID <= 0 {
+		return nil, fmt.Errorf("distinct device families: user id must be positive")
+	}
+	rows, err := s.DB.QueryContext(context.Background(),
+		`SELECT rf.id, rf.user_id, rf.token_hash, rf.family_id, rf.revoked, rf.expires_at, rf.created_at
+		 FROM refresh_tokens rf
+		 INNER JOIN (
+		     SELECT family_id, MAX(created_at) AS latest
+		     FROM refresh_tokens
+		     WHERE user_id = ? AND revoked = 0 AND expires_at > NOW()
+		     GROUP BY family_id
+		 ) latest_rf ON rf.family_id = latest_rf.family_id AND rf.created_at = latest_rf.latest
+		 WHERE rf.user_id = ? AND rf.revoked = 0 AND rf.expires_at > NOW()
+		 ORDER BY rf.created_at DESC`, userID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("distinct device families: %w", err)
+	}
+	defer rows.Close()
+	var tokens []*model.RefreshToken
+	for rows.Next() {
+		rt := &model.RefreshToken{}
+		if err := rows.Scan(&rt.ID, &rt.UserID, &rt.TokenHash, &rt.FamilyID, &rt.Revoked, &rt.ExpiresAt, &rt.CreatedAt); err != nil {
+			return nil, fmt.Errorf("distinct device families scan: %w", err)
+		}
+		tokens = append(tokens, rt)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("distinct device families iterate: %w", err)
+	}
+	return tokens, nil
+}
+
+func (s *Store) RevokeDeviceFamily(userID int64, familyID string) error {
+	if userID <= 0 {
+		return fmt.Errorf("revoke device family: user id must be positive")
+	}
+	if familyID == "" {
+		return fmt.Errorf("revoke device family: family id must not be empty")
+	}
+	result, err := s.DB.ExecContext(context.Background(),
+		"UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ? AND family_id = ? AND revoked = 0",
+		userID, familyID)
+	if err != nil {
+		return fmt.Errorf("revoke device family: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("revoke device family rows affected: %w", err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("设备未找到或已吊销")
+	}
+	return nil
+}
+
 func (s *Store) UserTOTPSecret(userID int64) (string, error) {
 	if userID <= 0 {
 		return "", fmt.Errorf("获取TOTP密钥：用户ID必须为正数")

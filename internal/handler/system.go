@@ -3,6 +3,7 @@ package handler
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"networkdisk/internal/logging"
 	"networkdisk/internal/service"
@@ -14,6 +15,15 @@ type SystemHandler struct {
 
 func NewSystemHandler(fileSvc *service.FileService) *SystemHandler {
 	return &SystemHandler{fileSvc: fileSvc}
+}
+
+func (h *SystemHandler) Health(w http.ResponseWriter, r *http.Request) {
+	if err := h.fileSvc.HealthCheck(); err != nil {
+		logging.Error(r.Context(), "system", "health check failed", "error", err)
+		writeError(w, http.StatusServiceUnavailable, "服务不可用")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (h *SystemHandler) StorageStats(w http.ResponseWriter, r *http.Request) {
@@ -54,12 +64,23 @@ func (h *SystemHandler) AuditLogs(w http.ResponseWriter, r *http.Request) {
 	if offset > 100000 {
 		offset = 100000
 	}
-	logs, err := h.fileSvc.AuditLogs(userID, action, limit, offset)
+
+	startTime := q.Get("start")
+	if startTime == "" {
+		startTime = "1970-01-01"
+	}
+	endTime := q.Get("end")
+	if endTime == "" {
+		endTime = "2099-12-31"
+	}
+
+	logs, err := h.fileSvc.AuditLogsWithRange(userID, action, startTime, endTime, limit, offset)
 	if err != nil {
 		logging.Error(r.Context(), "system", "audit logs failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
+
 	type entry struct {
 		ID         int64  `json:"id"`
 		UserID     int64  `json:"user_id"`
@@ -83,4 +104,58 @@ func (h *SystemHandler) AuditLogs(w http.ResponseWriter, r *http.Request) {
 		entries = []entry{}
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"logs": entries})
+}
+
+func (h *SystemHandler) Devices(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r)
+	if userID == 0 {
+		writeError(w, http.StatusUnauthorized, "未授权")
+		return
+	}
+	devices, err := h.fileSvc.DeviceFamilies(userID)
+	if err != nil {
+		logging.Error(r.Context(), "system", "device families failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	type deviceEntry struct {
+		FamilyID  string `json:"family_id"`
+		CreatedAt string `json:"created_at"`
+		ExpiresAt string `json:"expires_at"`
+	}
+	entries := make([]deviceEntry, 0, len(devices))
+	for _, d := range devices {
+		entries = append(entries, deviceEntry{
+			FamilyID:  d.FamilyID,
+			CreatedAt: d.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			ExpiresAt: d.ExpiresAt.Format("2006-01-02T15:04:05Z"),
+		})
+	}
+	if entries == nil {
+		entries = []deviceEntry{}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"devices": entries})
+}
+
+func (h *SystemHandler) LogoutDevice(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r)
+	if userID == 0 {
+		writeError(w, http.StatusUnauthorized, "未授权")
+		return
+	}
+	device := r.PathValue("device")
+	if device == "" {
+		writeError(w, http.StatusBadRequest, "缺少设备标识")
+		return
+	}
+	if err := h.fileSvc.RevokeDevice(userID, device); err != nil {
+		if strings.Contains(err.Error(), "未找到") {
+			writeError(w, http.StatusNotFound, "设备未找到")
+			return
+		}
+		logging.Error(r.Context(), "system", "revoke device failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "设备已吊销"})
 }

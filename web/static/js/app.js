@@ -265,12 +265,36 @@ function removeProgress(div, error) {
     }
 }
 
-function showToast(msg) {
+function showToast(msg, type) {
     var toast = document.createElement('div');
     toast.className = 'toast';
+    if (type === 'success') toast.className += ' toast-success';
+    if (type === 'error') toast.className += ' toast-error';
     toast.textContent = msg;
     document.body.appendChild(toast);
     setTimeout(function() {
         if (toast.parentNode) toast.parentNode.removeChild(toast);
     }, 2500);
 }
+
+(function() {
+    var btn = document.createElement('button');
+    btn.className = 'mobile-menu-btn';
+    btn.style.cssText = 'background:none;border:none;color:var(--text);font-size:20px;cursor:pointer;padding:4px 8px;';
+    btn.innerHTML = '&#9776;';
+    btn.onclick = function() {
+        var sidebar = document.querySelector('.sidebar');
+        if (sidebar) sidebar.classList.toggle('open');
+    };
+    var navbar = document.querySelector('.navbar-nav');
+    if (navbar && window.innerWidth <= 768) {
+        navbar.insertBefore(btn, navbar.firstChild);
+    }
+    window.addEventListener('resize', function() {
+        if (window.innerWidth > 768 && btn.parentNode) {
+            btn.parentNode.removeChild(btn);
+        } else if (window.innerWidth <= 768 && navbar && !navbar.contains(btn)) {
+            navbar.insertBefore(btn, navbar.firstChild);
+        }
+    });
+})();

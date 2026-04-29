@@ -80,3 +80,46 @@ func (s *Store) DeleteExpiredAuditLogs(retentionDays int) (int64, error) {
 	}
 	return result.RowsAffected()
 }
+
+func (s *Store) AuditLogsByUserWithRange(userID int64, action, startTime, endTime string, limit, offset int) ([]*model.AuditLog, error) {
+	if userID <= 0 {
+		return nil, fmt.Errorf("audit logs by user: user id must be positive")
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	query := "SELECT id, user_id, action, target_type, target_id, detail, ip, created_at FROM audit_logs WHERE user_id = ?"
+	args := []interface{}{userID}
+	if action != "" {
+		if !validAuditActions[action] {
+			return nil, fmt.Errorf("audit logs by user: invalid action %q", action)
+		}
+		query += " AND action = ?"
+		args = append(args, action)
+	}
+	query += " AND created_at >= ? AND created_at <= ?"
+	args = append(args, startTime, endTime)
+	query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+	args = append(args, limit, offset)
+
+	rows, err := s.DB.QueryContext(context.Background(), query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("audit logs by user with range: %w", err)
+	}
+	defer rows.Close()
+	var logs []*model.AuditLog
+	for rows.Next() {
+		l := &model.AuditLog{}
+		if err := rows.Scan(&l.ID, &l.UserID, &l.Action, &l.TargetType, &l.TargetID, &l.Detail, &l.IP, &l.CreatedAt); err != nil {
+			return nil, fmt.Errorf("audit logs scan: %w", err)
+		}
+		logs = append(logs, l)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("audit logs iterate: %w", err)
+	}
+	return logs, nil
+}

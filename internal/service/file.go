@@ -1529,8 +1529,34 @@ func (svc *FileService) AuditLogs(userID int64, action string, limit, offset int
 	return svc.store.AuditLogsByUser(userID, action, limit, offset)
 }
 
+func (svc *FileService) AuditLogsWithRange(userID int64, action, startTime, endTime string, limit, offset int) ([]*model.AuditLog, error) {
+	return svc.store.AuditLogsByUserWithRange(userID, action, startTime, endTime, limit, offset)
+}
+
 func (svc *FileService) CleanExpiredAuditLogs() (int64, error) {
 	return svc.store.DeleteExpiredAuditLogs(svc.getCfg().Log.AuditRetentionDays)
+}
+
+func (svc *FileService) HealthCheck() error {
+	if err := svc.store.DB.Ping(); err != nil {
+		return fmt.Errorf("database ping: %w", err)
+	}
+	testPath := "_health_check_test"
+	if _, err := svc.fileStore.Save(testPath, strings.NewReader("health")); err != nil {
+		return fmt.Errorf("storage writable check: %w", err)
+	}
+	if err := svc.fileStore.Delete(testPath); err != nil {
+		logging.Warn(context.Background(), "file", "failed to clean up health check file", "error", err)
+	}
+	return nil
+}
+
+func (svc *FileService) DeviceFamilies(userID int64) ([]*model.RefreshToken, error) {
+	return svc.store.DistinctDeviceFamilies(userID)
+}
+
+func (svc *FileService) RevokeDevice(userID int64, familyID string) error {
+	return svc.store.RevokeDeviceFamily(userID, familyID)
 }
 
 func (svc *FileService) PreviewType(mimeType string) string {
