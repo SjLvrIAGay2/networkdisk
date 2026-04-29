@@ -75,11 +75,11 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 	share, err := h.svc.CreateShare(body.FileID, userID, body.Password, expireAt, body.MaxDownloads)
 	if err != nil {
 		if errors.Is(err, service.ErrFileNotFound) {
-			if errors.Is(err, service.ErrFolderNotAllowed) {
-				writeError(w, http.StatusBadRequest, "不支持分享文件夹")
-				return
-			}
 			writeError(w, http.StatusNotFound, "文件不存在")
+			return
+		}
+		if errors.Is(err, service.ErrFolderNotAllowed) {
+			writeError(w, http.StatusBadRequest, "不支持分享文件夹")
 			return
 		}
 		logging.Error(r.Context(), "share", "create share failed", "error", err)
@@ -185,16 +185,20 @@ func (h *ShareHandler) ServePublicPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if share.PasswordHash != "" {
-		h.accessTmpl.ExecuteTemplate(w, "share_access.html", map[string]interface{}{
+		if err := h.accessTmpl.ExecuteTemplate(w, "share_access.html", map[string]interface{}{
 			"token":     share.Token,
 			"fileName":  f.Name,
 			"fileSize":  f.Size,
 			"mimeType":  f.MimeType,
-		})
+		}); err != nil {
+			logging.Error(r.Context(), "share", "share access template failed", "error", err)
+		}
 		return
 	}
 
-	h.viewTmpl.ExecuteTemplate(w, "share_view.html", h.shareViewData(share, f))
+	if err := h.viewTmpl.ExecuteTemplate(w, "share_view.html", h.shareViewData(share, f)); err != nil {
+		logging.Error(r.Context(), "share", "share view template failed", "error", err)
+	}
 }
 
 func (h *ShareHandler) VerifyPassword(w http.ResponseWriter, r *http.Request) {
@@ -260,9 +264,9 @@ func (h *ShareHandler) Download(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, service.ErrShareNotFound), errors.Is(err, service.ErrShareExpired):
 			writeError(w, http.StatusNotFound, "分享链接无效或已过期")
 		case errors.Is(err, service.ErrShareMaxReached):
-			case errors.Is(err, service.ErrSharePassword):
-				writeError(w, http.StatusForbidden, "需要密码验证")
 			writeError(w, http.StatusGone, "分享链接已达到下载上限")
+		case errors.Is(err, service.ErrSharePassword):
+			writeError(w, http.StatusForbidden, "需要密码验证")
 		default:
 			logging.Error(r.Context(), "share", "share download failed", "error", err)
 			writeError(w, http.StatusInternalServerError, "服务器内部错误")
@@ -337,7 +341,11 @@ func (h *ShareHandler) shareViewData(share *model.Share, f *model.File) map[stri
 	if previewType == "download" && f.MimeType != "" {
 		if strings.HasPrefix(f.MimeType, "text/") {
 			content, pt := h.fileSvc.ShareFileContent(f)
-			data["content"] = content
+			if pt == "markdown" {
+				data["content"] = template.HTML(content)
+			} else {
+				data["content"] = content
+			}
 			data["previewType"] = pt
 		}
 	}
@@ -352,15 +360,17 @@ func (h *ShareHandler) renderShareError(w http.ResponseWriter, r *http.Request, 
 	case errors.Is(err, service.ErrShareExpired):
 		msg = "分享链接已过期"
 	case errors.Is(err, service.ErrShareMaxReached):
-			case errors.Is(err, service.ErrSharePassword):
-				writeError(w, http.StatusForbidden, "需要密码验证")
 		msg = "分享链接已达到下载上限"
+	case errors.Is(err, service.ErrSharePassword):
+		msg = "需要密码验证"
 	default:
 		msg = "服务器内部错误"
 	}
-	h.accessTmpl.ExecuteTemplate(w, "share_access.html", map[string]interface{}{
+	if err := h.accessTmpl.ExecuteTemplate(w, "share_access.html", map[string]interface{}{
 		"error": msg,
-	})
+	}); err != nil {
+		logging.Error(r.Context(), "share", "share error template failed", "error", err)
+	}
 }
 
 func nilSafeTime(t *time.Time) interface{} {

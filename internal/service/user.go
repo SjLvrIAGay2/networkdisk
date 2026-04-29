@@ -20,10 +20,15 @@ import (
 	"networkdisk/internal/store"
 )
 
+type pendingTOTPEntry struct {
+	secret    string
+	createdAt time.Time
+}
+
 type UserService struct {
 	store        *store.Store
 	config       atomic.Value
-	pendingTOTP  map[int64]string
+	pendingTOTP  map[int64]pendingTOTPEntry
 	pendingMu    sync.Mutex
 	totpAttempts map[int64]totpAttempt
 	totpMu       sync.Mutex
@@ -50,7 +55,7 @@ var (
 func NewUserService(s *store.Store, cfg *config.Config) *UserService {
 	svc := &UserService{
 		store:        s,
-		pendingTOTP:  make(map[int64]string),
+		pendingTOTP:  make(map[int64]pendingTOTPEntry),
 		totpAttempts: make(map[int64]totpAttempt),
 	}
 	svc.config.Store(cfg)
@@ -310,7 +315,7 @@ func (svc *UserService) GenerateTOTP(userID int64) (string, string, error) {
 		return "", "", fmt.Errorf("generate totp key: %w", err)
 	}
 	svc.pendingMu.Lock()
-	svc.pendingTOTP[userID] = key.Secret()
+	svc.pendingTOTP[userID] = pendingTOTPEntry{secret: key.Secret(), createdAt: time.Now()}
 	svc.pendingMu.Unlock()
 	return key.Secret(), key.URL(), nil
 }
@@ -320,18 +325,18 @@ func (svc *UserService) EnableTOTP(userID int64, code string) error {
 		return err
 	}
 	svc.pendingMu.Lock()
-	secret, ok := svc.pendingTOTP[userID]
+	entry, ok := svc.pendingTOTP[userID]
 	delete(svc.pendingTOTP, userID)
 	svc.pendingMu.Unlock()
-	if !ok || secret == "" {
+	if !ok || entry.secret == "" {
 		return fmt.Errorf("请先获取两步验证密钥")
 	}
-	if !totp.Validate(code, secret) {
+	if !totp.Validate(code, entry.secret) {
 		svc.recordTOTPAttempt(userID)
 		return fmt.Errorf("验证码无效，请确认扫描了正确的二维码")
 	}
 	svc.resetTOTPAttempts(userID)
-	return svc.store.SetTOTPSecret(userID, secret)
+	return svc.store.SetTOTPSecret(userID, entry.secret)
 }
 
 func (svc *UserService) DisableTOTP(userID int64, code string) error {
@@ -381,6 +386,24 @@ func (svc *UserService) recordTOTPAttempt(userID int64) {
 func (svc *UserService) resetTOTPAttempts(userID int64) {
 	svc.totpMu.Lock()
 	delete(svc.totpAttempts, userID)
+	svc.totpMu.Unlock()
+}
+
+func (svc *UserService) CleanupTOTPState() {
+	svc.pendingMu.Lock()
+	for id, entry := range svc.pendingTOTP {
+		if time.Since(entry.createdAt) > 30*time.Minute {
+			delete(svc.pendingTOTP, id)
+		}
+	}
+	svc.pendingMu.Unlock()
+
+	svc.totpMu.Lock()
+	for id, attempt := range svc.totpAttempts {
+		if time.Now().After(attempt.resetAt) && attempt.count >= maxTOTPAttempts {
+			delete(svc.totpAttempts, id)
+		}
+	}
 	svc.totpMu.Unlock()
 }
 

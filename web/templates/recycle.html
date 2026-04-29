@@ -5,13 +5,7 @@
 <button onclick="handleLogout()" style="font-size:14px;color:var(--text);text-decoration:none;background:none;border:none;cursor:pointer;padding:6px 12px;border-radius:6px;">退出</button>
 <button id="themeToggle" class="theme-toggle" onclick="toggleTheme()">🌙</button>
 {{end}}
-{{define "sidebar"}}
-<a href="/dashboard">仪表盘</a>
-<a href="/">文件</a>
-<a href="/search">搜索</a>
-<a href="/recycle">回收站</a>
-<a href="/shares">共享</a>
-{{end}}
+{{define "sidebar"}}{{end}}
 {{define "content"}}
 <div>
     <div class="toolbar" style="margin-bottom:16px;display:flex;align-items:center;gap:12px;">

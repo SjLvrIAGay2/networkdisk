@@ -188,6 +188,36 @@ func (s *Store) TempDownloadByToken(token string) (*model.TempDownload, error) {
 	return td, nil
 }
 
+func (s *Store) FilesWithActiveShares(ownerID int64) ([]*model.File, error) {
+	if ownerID <= 0 {
+		return nil, fmt.Errorf("files with active shares: owner_id must be positive")
+	}
+	rows, err := s.DB.QueryContext(context.Background(),
+		"SELECT f.id, f.user_id, f.parent_id, f.name, f.is_dir, f.size, f.file_hash, f.storage_key, f.thumbnail_key, f.mime_type, f.is_starred, f.is_deleted, f.deleted_at, f.created_at, f.updated_at FROM files f INNER JOIN (SELECT file_id, MAX(created_at) AS max_created FROM shares WHERE owner_id = ? AND (expire_at IS NULL OR expire_at > NOW()) GROUP BY file_id) s ON f.id = s.file_id WHERE f.is_deleted = 0 ORDER BY s.max_created DESC",
+		ownerID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("files with active shares: %w", err)
+	}
+	defer rows.Close()
+	var files []*model.File
+	for rows.Next() {
+		f := &model.File{}
+		var deletedAt sql.NullTime
+		if err := rows.Scan(&f.ID, &f.UserID, &f.ParentID, &f.Name, &f.IsDir, &f.Size, &f.FileHash, &f.StorageKey, &f.ThumbnailKey, &f.MimeType, &f.IsStarred, &f.IsDeleted, &deletedAt, &f.CreatedAt, &f.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("files with active shares scan: %w", err)
+		}
+		if deletedAt.Valid {
+			f.DeletedAt = &deletedAt.Time
+		}
+		files = append(files, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("files with active shares iterate: %w", err)
+	}
+	return files, nil
+}
+
 func (s *Store) DeleteExpiredTempDownloads() (int64, error) {
 	result, err := s.DB.ExecContext(context.Background(), "DELETE FROM temp_downloads WHERE expire_at < NOW()")
 	if err != nil {

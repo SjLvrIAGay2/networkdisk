@@ -5,40 +5,41 @@
 <button onclick="handleLogout()" style="font-size:14px;color:var(--text);text-decoration:none;background:none;border:none;cursor:pointer;padding:6px 12px;border-radius:6px;">退出</button>
 <button id="themeToggle" class="theme-toggle" onclick="toggleTheme()">🌙</button>
 {{end}}
-{{define "sidebar"}}
-<a href="/dashboard">仪表盘</a>
-<a href="/">文件</a>
-<a href="/search">搜索</a>
-<a href="/recycle">回收站</a>
-<a href="/shares">共享</a>
-{{end}}
+{{define "sidebar"}}{{end}}
 {{define "content"}}
 <div>
+    <div class="category-bar">
+        <button class="category-tab active" data-category="all" onclick="switchCategory('all')">全部</button>
+        <button class="category-tab" data-category="recent" onclick="switchCategory('recent')">最近</button>
+        <button class="category-tab" data-category="document" onclick="switchCategory('document')">文档</button>
+        <button class="category-tab" data-category="image" onclick="switchCategory('image')">图片</button>
+        <button class="category-tab" data-category="video" onclick="switchCategory('video')">视频</button>
+        <button class="category-tab" data-category="shared" onclick="switchCategory('shared')">我的分享</button>
+        <button class="category-tab" data-category="recycle" onclick="switchCategory('recycle')">回收站</button>
+    </div>
     <div class="toolbar" style="margin-bottom:16px;display:flex;align-items:center;gap:12px;">
-        <button class="btn btn-primary" onclick="showMkdirModal()">新建文件夹</button>
-        <label class="btn" style="cursor:pointer;background:var(--primary);color:#fff;padding:8px 20px;border-radius:6px;font-size:14px;">
-            上传文件
-            <input type="file" id="fileInput" style="display:none" onchange="handleUpload(this)">
-        </label>
+        <span id="toolbarDirActions">
+            <button class="btn btn-primary" onclick="showMkdirModal()">新建文件夹</button>
+            <label class="btn" style="cursor:pointer;background:var(--primary);color:#fff;padding:8px 20px;border-radius:6px;font-size:14px;">
+                上传文件
+                <input type="file" id="fileInput" style="display:none" onchange="handleUpload(this)">
+            </label>
+        </span>
         <button class="btn" style="background:var(--surface);border:1px solid var(--border);" onclick="refreshFiles()">刷新</button>
     </div>
     <div id="breadcrumb" style="margin-bottom:12px;font-size:13px;color:var(--text-secondary);">
         <a href="#" onclick="navigateTo(null);return false;" style="color:var(--primary);text-decoration:none;">根目录</a>
     </div>
     <div class="card" style="padding:0;">
-        <table style="width:100%;border-collapse:collapse;">
-            <thead>
-                <tr style="border-bottom:1px solid var(--border);">
-                    <th style="padding:10px 16px;text-align:left;font-size:13px;font-weight:500;color:var(--text-secondary);">名称</th>
-                    <th style="padding:10px 16px;text-align:right;font-size:13px;font-weight:500;color:var(--text-secondary);">大小</th>
-                    <th style="padding:10px 16px;text-align:right;font-size:13px;font-weight:500;color:var(--text-secondary);">创建时间</th>
-                    <th style="padding:10px 16px;text-align:right;font-size:13px;font-weight:500;color:var(--text-secondary);">操作</th>
-                </tr>
-            </thead>
-            <tbody id="fileList">
-                <tr><td colspan="4" style="padding:32px;text-align:center;color:var(--text-secondary);">加载中...</td></tr>
-            </tbody>
-        </table>
+        <div class="file-list-header">
+            <span class="col-name">名称</span>
+            <span class="col-actions"></span>
+            <span class="col-size">大小</span>
+            <span class="col-time" id="colTime">创建时间</span>
+        </div>
+        <div id="fileList">
+            <div class="loading">加载中...</div>
+        </div>
     </div>
 </div>
 
@@ -100,6 +101,7 @@
 {{define "scripts"}}
 <script>
 var currentDir = null;
+var currentCategory = 'all';
 var renameFileId = null;
 var shareFileId = null;
 
@@ -125,7 +127,7 @@ var shareFileId = null;
         localStorage.removeItem('access_token');
         window.location.replace('/login');
     });
-    refreshFiles();
+    switchCategory('all');
 })();
 
 function navigateTo(dirId) {
@@ -133,46 +135,110 @@ function navigateTo(dirId) {
     refreshFiles();
 }
 
+function switchCategory(category) {
+    currentCategory = category;
+    document.querySelectorAll('.category-tab').forEach(function(t) {
+        t.classList.toggle('active', t.dataset.category === category);
+    });
+    var breadcrumb = document.getElementById('breadcrumb');
+    var toolbarDir = document.getElementById('toolbarDirActions');
+    if (category === 'all') {
+        breadcrumb.style.display = 'block';
+        toolbarDir.style.display = 'inline';
+    } else {
+        breadcrumb.style.display = 'none';
+        toolbarDir.style.display = 'none';
+    }
+    document.getElementById('colTime').textContent = (category === 'recycle') ? '删除时间' : '创建时间';
+    if (category !== 'all') {
+        currentDir = null;
+    }
+    refreshFiles();
+}
+
 function refreshFiles() {
-    var url = '/api/files';
-    if (currentDir !== null) url += '?dir_id=' + currentDir;
+    var url;
+    switch (currentCategory) {
+        case 'all':
+            url = '/api/files';
+            if (currentDir !== null) url += '?dir_id=' + currentDir;
+            break;
+        case 'recent':
+            url = '/api/files/recent?limit=100';
+            break;
+        case 'document':
+        case 'image':
+        case 'video':
+            url = '/api/files?type=' + currentCategory;
+            break;
+        case 'shared':
+            url = '/api/files/shared';
+            break;
+        case 'recycle':
+            url = '/api/files/recycle';
+            break;
+        default:
+            url = '/api/files';
+    }
     apiFetch(url, {}).then(function(r) {
         if (!r.ok) throw new Error('failed');
         return r.json();
     }).then(function(data) {
         renderFiles(data.files);
     }).catch(function() {
-        document.getElementById('fileList').innerHTML = '<tr><td colspan="4" style="padding:32px;text-align:center;color:var(--danger);">加载失败</td></tr>';
+        document.getElementById('fileList').innerHTML = '<div class="error-state">加载失败</div>';
     });
 }
 
 function renderFiles(files) {
-    var tbody = document.getElementById('fileList');
+    var container = document.getElementById('fileList');
     if (!files || files.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="4" style="padding:32px;text-align:center;color:var(--text-secondary);">空目录</td></tr>';
+        var emptyMsg = '暂无文件';
+        if (currentCategory === 'all') emptyMsg = '空目录';
+        else if (currentCategory === 'recent') emptyMsg = '暂无最近文件';
+        else if (currentCategory === 'shared') emptyMsg = '暂无分享';
+        else if (currentCategory === 'recycle') emptyMsg = '回收站为空';
+        container.innerHTML = '<div class="empty-state">' + emptyMsg + '</div>';
         return;
     }
+    var isRecycle = (currentCategory === 'recycle');
+    var isAll = (currentCategory === 'all');
     var html = '';
     for (var i = 0; i < files.length; i++) {
         var f = files[i];
         var icon = f.is_dir ? '📁' : '📄';
-        var nameHtml = f.is_dir
-            ? '<a href="#" onclick="navigateTo(' + f.id + ');return false;" style="color:var(--text);text-decoration:none;">' + icon + ' ' + escapeHtml(f.name) + '</a>'
-            : '<a href="#" onclick="downloadFile(' + f.id + ',\'' + escapeJsAttr(f.name) + '\');return false;" style="color:var(--text);text-decoration:none;">' + icon + ' ' + escapeHtml(f.name) + '</a>';
+        var nameDisplay = escapeHtml(f.name);
         var sizeStr = f.is_dir ? '-' : formatSize(f.size);
-        var shareBtn = f.is_dir ? '' : '<button onclick="showCreateShareModal(' + f.id + ')" style="font-size:12px;margin-right:4px;background:none;border:1px solid var(--primary);border-radius:4px;padding:3px 8px;cursor:pointer;color:var(--primary);">分享</button>';
-        html += '<tr style="border-bottom:1px solid var(--border);" data-file-id="' + f.id + '">';
-        html += '<td class="file-name" style="padding:10px 16px;">' + nameHtml + '</td>';
-        html += '<td style="padding:10px 16px;text-align:right;font-size:13px;color:var(--text-secondary);">' + sizeStr + '</td>';
-        html += '<td style="padding:10px 16px;text-align:right;font-size:13px;color:var(--text-secondary);">' + (f.created_at || '').substring(0, 10) + '</td>';
-        html += '<td style="padding:10px 16px;text-align:right;">';
-        html += shareBtn;
-        html += '<button onclick="showRenameModal(' + f.id + ',\'' + escapeJsAttr(f.name) + '\')" style="font-size:12px;margin-right:4px;background:none;border:1px solid var(--border);border-radius:4px;padding:3px 8px;cursor:pointer;color:var(--text);">重命名</button>';
-        html += '<button onclick="deleteFile(' + f.id + ')" style="font-size:12px;background:none;border:1px solid var(--danger);border-radius:4px;padding:3px 8px;cursor:pointer;color:var(--danger);">删除</button>';
-        html += '</td>';
-        html += '</tr>';
+        var ts = isRecycle ? (f.deleted_at || '') : (f.created_at || '');
+        var timeStr = ts.substring(0, 10);
+
+        var nameHtml;
+        if (f.is_dir && isAll) {
+            nameHtml = '<a href="#" onclick="navigateTo(' + f.id + ');return false;" style="color:var(--text);text-decoration:none;">' + icon + ' ' + nameDisplay + '</a>';
+        } else {
+            nameHtml = icon + ' ' + nameDisplay;
+        }
+
+        html += '<div class="file-row" data-file-id="' + f.id + '">';
+        html += '<div class="file-name">' + nameHtml + '</div>';
+        html += '<div class="file-actions">';
+        if (isRecycle) {
+            html += '<button class="action-btn action-restore" onclick="restoreFile(' + f.id + ')">恢复</button>';
+            html += '<button class="action-btn action-delperm" onclick="permanentDelete(' + f.id + ',' + (f.is_dir ? 'true' : 'false') + ')">永久删除</button>';
+        } else {
+            if (!f.is_dir) {
+                html += '<button class="action-btn" style="border-color:var(--primary);color:var(--primary);" onclick="showCreateShareModal(' + f.id + ')">分享</button>';
+                html += '<button class="action-btn" onclick="downloadFile(' + f.id + ',\'' + escapeJsAttr(f.name) + '\')">下载</button>';
+            }
+            html += '<button class="action-btn" style="border-color:var(--danger);color:var(--danger);" onclick="deleteFile(' + f.id + ')">删除</button>';
+            html += '<button class="action-btn action-more">更多</button>';
+        }
+        html += '</div>';
+        html += '<div class="file-size-cell">' + sizeStr + '</div>';
+        html += '<div class="file-time-cell">' + timeStr + '</div>';
+        html += '</div>';
     }
-    tbody.innerHTML = html;
+    container.innerHTML = html;
 }
 
 function showMkdirModal() {
@@ -241,15 +307,50 @@ function deleteFile(id) {
     if (!confirm('确认删除？文件将移至回收站。')) return;
     apiFetch('/api/files/' + id, {
         method: 'DELETE',
-        headers: {
-            'X-CSRF-Token': getCSRFToken()
-        }
+        headers: { 'X-CSRF-Token': getCSRFToken() }
     }).then(function(r) {
-        if (r.ok) {
-            refreshFiles();
-        } else {
-            r.json().then(function(d) { alert(d.error || '删除失败'); });
-        }
+        if (r.ok) { refreshFiles(); }
+        else { r.json().then(function(d) { alert(d.error || '删除失败'); }); }
+    }).catch(function() { alert('删除失败'); });
+}
+
+function restoreFile(id) {
+    apiFetch('/api/files/' + id + '/restore', {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': getCSRFToken() }
+    }).then(function(r) {
+        if (r.ok) { refreshFiles(); }
+        else { r.json().then(function(d) { alert(d.error || '恢复失败'); }); }
+    }).catch(function() { alert('恢复失败'); });
+}
+
+function permanentDelete(id, isDir) {
+    if (!isDir) {
+        if (!confirm('确认永久删除？此操作不可撤销！')) return;
+        doPermanentDelete(id);
+        return;
+    }
+    apiFetch('/api/files/permanent-preview/' + id, {}).then(function(r) {
+        if (!r.ok) throw new Error('preview failed');
+        return r.json();
+    }).then(function(data) {
+        var msg = '确认永久删除？';
+        var parts = [];
+        if (data.dir_count > 0) parts.push(data.dir_count + '个文件夹');
+        if (data.file_count > 0) parts.push(data.file_count + '个文件');
+        if (parts.length > 0) msg += '此操作还会使该文件夹中' + parts.join('、') + '被永久删除。';
+        else msg += '此操作不可撤销！';
+        if (confirm(msg)) doPermanentDelete(id);
+    }).catch(function() { alert('获取删除预览失败'); });
+}
+
+function doPermanentDelete(id) {
+    apiFetch('/api/files/' + id + '/permanent', {
+        method: 'DELETE',
+        headers: { 'X-CSRF-Token': getCSRFToken() }
+    }).then(function(r) {
+        if (r.ok) { refreshFiles(); }
+        else { r.json().then(function(d) { alert(d.error || '删除失败'); }); }
     }).catch(function() { alert('删除失败'); });
 }
 
@@ -305,16 +406,11 @@ function handleUpload(input) {
     if (currentDir !== null) form.append('dir_id', currentDir);
     apiFetch('/api/files/upload', {
         method: 'POST',
-        headers: {
-            'X-CSRF-Token': getCSRFToken()
-        },
+        headers: { 'X-CSRF-Token': getCSRFToken() },
         body: form
     }).then(function(r) {
-        if (r.ok) {
-            refreshFiles();
-        } else {
-            r.json().then(function(d) { alert(d.error || '上传失败'); });
-        }
+        if (r.ok) { refreshFiles(); }
+        else { r.json().then(function(d) { alert(d.error || '上传失败'); }); }
     }).catch(function() { alert('上传失败'); });
     input.value = '';
 }

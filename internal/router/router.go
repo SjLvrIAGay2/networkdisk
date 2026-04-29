@@ -22,8 +22,8 @@ func New(authH *handler.AuthHandler, fileH *handler.FileHandler, sysH *handler.S
 
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir("web/static"))))
 
-	mux.Handle("POST /api/auth/register", wrap(authH.Register, rateLimitMw, csrfMw))
-	mux.Handle("POST /api/auth/login", wrap(authH.Login, rateLimitMw, csrfMw))
+	mux.Handle("POST /api/auth/register", wrap(authH.Register, rateLimitMw))
+	mux.Handle("POST /api/auth/login", wrap(authH.Login, rateLimitMw))
 	mux.Handle("POST /api/auth/logout", wrap(authH.Logout, authMw, csrfMw))
 	mux.Handle("POST /api/auth/refresh", wrap(authH.Refresh, csrfMw))
 	mux.Handle("GET /api/auth/me", wrap(authH.Me, authMw))
@@ -52,6 +52,7 @@ func New(authH *handler.AuthHandler, fileH *handler.FileHandler, sysH *handler.S
 	mux.Handle("POST /api/files/batch-move", wrap(fileH.BatchMove, authMw, csrfMw))
 	mux.Handle("GET /api/files/download-zip", wrap(fileH.DownloadZip, authMw))
 	mux.Handle("GET /api/files/recent", wrap(fileH.Recent, authMw))
+	mux.Handle("GET /api/files/shared", wrap(fileH.SharedFiles, authMw))
 	mux.Handle("GET /api/files/dashboard", wrap(fileH.Dashboard, authMw))
 
 	mux.Handle("POST /api/files/upload/init", wrap(fileH.InitUpload, authMw, csrfMw))

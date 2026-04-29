@@ -42,6 +42,12 @@ func Run(configPath string) error {
 	if len(cfg.Auth.JWTSecret) < 32 {
 		return fmt.Errorf("auth.jwt_secret must be at least 32 characters")
 	}
+	knownWeak := []string{"change-me-to-a-random-secret", "dev-secret-do-not-use-in-production"}
+	for _, kw := range knownWeak {
+		if cfg.Auth.JWTSecret == kw {
+			return fmt.Errorf("auth.jwt_secret must be changed from the default value")
+		}
+	}
 
 	st, err := store.New(cfg.DSN(), cfg.Database.MaxOpenConns, cfg.Database.MaxIdleConns, cfg.ConnMaxLifetimeDuration())
 	if err != nil {
@@ -127,6 +133,11 @@ func Run(configPath string) error {
 		}
 	})
 	defer close(tempDownloadCleanDone)
+
+	totpCleanDone := startHourlyTimer(func() {
+		userSvc.CleanupTOTPState()
+	})
+	defer close(totpCleanDone)
 
 	srv := &http.Server{
 		Addr:         cfg.Addr(),

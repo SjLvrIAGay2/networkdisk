@@ -22,7 +22,7 @@ func CSRF() func(http.Handler) http.Handler {
 					Name:     "csrf_token",
 					Value:    token,
 					Path:     "/",
-					Secure:   r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https",
+					Secure:   IsSecureRequest(r),
 					SameSite: http.SameSiteStrictMode,
 					MaxAge:   86400,
 				})
@@ -50,6 +50,10 @@ func CSRF() func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func IsSecureRequest(r *http.Request) bool {
+	return r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
 }
 
 func generateCSRFToken() (string, error) {

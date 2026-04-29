@@ -20,6 +20,8 @@ var (
 	mu       sync.RWMutex
 )
 
+const maxLogSize = 100 << 20
+
 func Init(cfg *config.Config) error {
 	mu.Lock()
 	defer mu.Unlock()
@@ -35,7 +37,7 @@ func Init(cfg *config.Config) error {
 		return fmt.Errorf("create log directory %s: %w", dir, err)
 	}
 
-	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	f, err := openLogFile(filePath)
 	if err != nil {
 		return fmt.Errorf("open log file %s: %w", filePath, err)
 	}
@@ -44,7 +46,7 @@ func Init(cfg *config.Config) error {
 		logFile.Close()
 	}
 	logFile = f
-	writer := io.MultiWriter(os.Stdout, f)
+	writer := newRotatingWriter(f, filePath, os.Stdout)
 	opts := &slog.HandlerOptions{Level: level}
 	var handler slog.Handler
 	if cfg.Log.Format == "json" {
@@ -124,4 +126,46 @@ func parseLevel(s string) slog.Level {
 	default:
 		return slog.LevelInfo
 	}
+}
+
+func openLogFile(filePath string) (*os.File, error) {
+	return os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+}
+
+type rotatingWriter struct {
+	mu       sync.Mutex
+	f        *os.File
+	path     string
+	stdout   io.Writer
+}
+
+func newRotatingWriter(f *os.File, path string, stdout io.Writer) io.Writer {
+	return &rotatingWriter{f: f, path: path, stdout: stdout}
+}
+
+func (rw *rotatingWriter) Write(p []byte) (int, error) {
+	rw.mu.Lock()
+	defer rw.mu.Unlock()
+
+	if fi, err := rw.f.Stat(); err == nil && fi.Size() >= maxLogSize {
+		rw.f.Close()
+		backup := rw.path + "." + time.Now().Format("20060102T150405")
+		if err := os.Rename(rw.path, backup); err == nil {
+			newF, err := openLogFile(rw.path)
+			if err != nil {
+				if stdoutN, _ := rw.stdout.Write(p); stdoutN > 0 {
+					return stdoutN, nil
+				}
+				return 0, err
+			}
+			rw.f = newF
+		}
+	}
+
+	n1, err1 := rw.f.Write(p)
+	n2, err2 := rw.stdout.Write(p)
+	if err1 != nil {
+		return n1, err1
+	}
+	return n2, err2
 }

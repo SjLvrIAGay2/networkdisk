@@ -79,7 +79,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		Value:    tokens.RefreshToken,
 		Path:     "/api/auth",
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
+		Secure:   middleware.IsSecureRequest(r),
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   604800,
 	})
@@ -87,7 +87,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		Name:     "csrf_token",
 		Value:    tokens.CSRFToken,
 		Path:     "/",
-		Secure:   r.TLS != nil,
+		Secure:   middleware.IsSecureRequest(r),
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   86400,
 	})
@@ -114,7 +114,7 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 		Value:    "",
 		Path:     "/api/auth",
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
+		Secure:   middleware.IsSecureRequest(r),
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   -1,
 	})
@@ -182,7 +182,7 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 				Value:    "",
 				Path:     "/api/auth",
 				HttpOnly: true,
-				Secure:   r.TLS != nil,
+				Secure:   middleware.IsSecureRequest(r),
 				SameSite: http.SameSiteStrictMode,
 				MaxAge:   -1,
 			})
@@ -202,7 +202,7 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		Value:    tokens.RefreshToken,
 		Path:     "/api/auth",
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
+		Secure:   middleware.IsSecureRequest(r),
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   604800,
 	})
@@ -210,7 +210,7 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		Name:     "csrf_token",
 		Value:    tokens.CSRFToken,
 		Path:     "/",
-		Secure:   r.TLS != nil,
+		Secure:   middleware.IsSecureRequest(r),
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   86400,
 	})
@@ -292,20 +292,21 @@ func (h *AuthHandler) DisableTOTP(w http.ResponseWriter, r *http.Request) {
 }
 
 type fileEntry struct {
-	ID           int64  `json:"id"`
-	Name         string `json:"name"`
-	IsDir        bool   `json:"is_dir"`
-	Size         int64  `json:"size"`
-	MimeType     string `json:"mime_type"`
-	ThumbnailKey string `json:"thumbnail_key"`
-	ParentID     *int64 `json:"parent_id"`
-	CreatedAt    string `json:"created_at"`
+	ID           int64   `json:"id"`
+	Name         string  `json:"name"`
+	IsDir        bool    `json:"is_dir"`
+	Size         int64   `json:"size"`
+	MimeType     string  `json:"mime_type"`
+	ThumbnailKey string  `json:"thumbnail_key"`
+	ParentID     *int64  `json:"parent_id"`
+	CreatedAt    string  `json:"created_at"`
+	DeletedAt    *string `json:"deleted_at,omitempty"`
 }
 
 func newFileEntries(files []*model.File) []fileEntry {
 	entries := make([]fileEntry, 0, len(files))
 	for _, f := range files {
-		entries = append(entries, fileEntry{
+		e := fileEntry{
 			ID:           f.ID,
 			Name:         f.Name,
 			IsDir:        f.IsDir,
@@ -314,7 +315,12 @@ func newFileEntries(files []*model.File) []fileEntry {
 			ThumbnailKey: f.ThumbnailKey,
 			ParentID:     f.ParentID,
 			CreatedAt:    f.CreatedAt.Format("2006-01-02T15:04:05Z"),
-		})
+		}
+		if f.DeletedAt != nil {
+			ds := f.DeletedAt.Format("2006-01-02T15:04:05Z")
+			e.DeletedAt = &ds
+		}
+		entries = append(entries, e)
 	}
 	return entries
 }

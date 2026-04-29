@@ -1,17 +1,10 @@
-<!DOCTYPE html>
-<html>
 {{define "title"}}操作日志 - NetworkDisk{{end}}
 {{define "nav-right"}}
     <a href="/dashboard">仪表盘</a>
     <button id="themeToggle" class="theme-toggle" type="button" onclick="toggleTheme()">🌙</button>
 {{end}}
 {{define "sidebar"}}
-    <a href="/">首页</a>
-    <a href="/dashboard">仪表盘</a>
-    <a href="/shares">分享管理</a>
-    <a href="/recycle">回收站</a>
-    <a href="/search">搜索</a>
-    <a href="/audit">操作日志</a>
+    <a href="/audit" style="font-weight:600;">操作日志</a>
 {{end}}
 {{define "content"}}
 <div class="card">
@@ -193,4 +186,3 @@
 })();
 </script>
 {{end}}
-</html>

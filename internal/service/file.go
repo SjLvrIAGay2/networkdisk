@@ -78,6 +78,9 @@ func (svc *FileService) lockHash(hash string) {
 func (svc *FileService) unlockHash(hash string) {
 	svc.hashMu.Lock()
 	mu, ok := svc.hashLocks[hash]
+	if ok {
+		delete(svc.hashLocks, hash)
+	}
 	svc.hashMu.Unlock()
 	if ok {
 		mu.Unlock()
@@ -1462,14 +1465,26 @@ func (svc *FileService) CleanStaleChunks() (int64, error) {
 		if !e.IsDir() {
 			continue
 		}
-		sessionPath := filepath.Join(chunksDir, e.Name(), "session.json")
+		chunkDir := filepath.Join(chunksDir, e.Name())
+		dirInfo, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if time.Since(dirInfo.ModTime()) < time.Minute {
+			continue
+		}
+		sessionPath := filepath.Join(chunkDir, "session.json")
 		info, err := os.Stat(sessionPath)
-		if err != nil || info.ModTime().Before(cutoff) {
-			if err := os.RemoveAll(filepath.Join(chunksDir, e.Name())); err != nil {
-				logging.Error(context.Background(), "file", "clean stale chunks failed", "upload_id", e.Name(), "error", err)
-			} else {
-				cleaned++
-			}
+		if err != nil && !os.IsNotExist(err) {
+			continue
+		}
+		if err == nil && !info.ModTime().Before(cutoff) {
+			continue
+		}
+		if err := os.RemoveAll(chunkDir); err != nil {
+			logging.Error(context.Background(), "file", "clean stale chunks failed", "upload_id", e.Name(), "error", err)
+		} else {
+			cleaned++
 		}
 	}
 	return cleaned, nil
@@ -1696,6 +1711,23 @@ func (svc *FileService) CreateTempLink(fileID int64, userID int64) (*model.TempD
 
 func (svc *FileService) RecentFiles(userID int64, limit int) ([]*model.File, error) {
 	return svc.store.RecentFiles(userID, limit)
+}
+
+func (svc *FileService) ListFilesByType(userID int64, filterType string) ([]*model.File, error) {
+	switch filterType {
+	case "image":
+		return svc.store.FilesByMimePrefixes(userID, []string{"image/"})
+	case "video":
+		return svc.store.FilesByMimePrefixes(userID, []string{"video/"})
+	case "document":
+		return svc.store.FilesByMimePrefixes(userID, []string{"application/pdf", "application/msword", "application/vnd.", "text/"})
+	default:
+		return nil, fmt.Errorf("无效的过滤类型：%s", filterType)
+	}
+}
+
+func (svc *FileService) SharedFiles(userID int64) ([]*model.File, error) {
+	return svc.store.FilesWithActiveShares(userID)
 }
 
 func generateStorageKey(ext string) (string, error) {

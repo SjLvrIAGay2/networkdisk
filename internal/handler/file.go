@@ -32,6 +32,16 @@ func (h *FileHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if filterType := r.URL.Query().Get("type"); filterType != "" {
+		files, err := h.svc.ListFilesByType(userID, filterType)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"files": newFileEntries(files)})
+		return
+	}
+
 	var parentID *int64
 	if dirStr := r.URL.Query().Get("dir_id"); dirStr != "" {
 		id, err := strconv.ParseInt(dirStr, 10, 64)
@@ -49,10 +59,24 @@ func (h *FileHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	entries := newFileEntries(files)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"files": entries,
+		"files": newFileEntries(files),
 	})
+}
+
+func (h *FileHandler) SharedFiles(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r)
+	if userID == 0 {
+		writeError(w, http.StatusUnauthorized, "未授权")
+		return
+	}
+	files, err := h.svc.SharedFiles(userID)
+	if err != nil {
+		logging.Error(r.Context(), "file", "shared files failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"files": newFileEntries(files)})
 }
 
 func (h *FileHandler) Upload(w http.ResponseWriter, r *http.Request) {
@@ -320,24 +344,7 @@ func (h *FileHandler) RecycleList(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
-	type entry struct {
-		ID        int64  `json:"id"`
-		Name      string `json:"name"`
-		IsDir     bool   `json:"is_dir"`
-		Size      int64  `json:"size"`
-		DeletedAt string `json:"deleted_at"`
-	}
-	entries := make([]entry, 0, len(files))
-	for _, f := range files {
-		ds := ""
-		if f.DeletedAt != nil {
-			ds = f.DeletedAt.Format("2006-01-02T15:04:05Z")
-		}
-		entries = append(entries, entry{ID: f.ID, Name: f.Name, IsDir: f.IsDir, Size: f.Size, DeletedAt: ds})
-	}
-	if entries == nil {
-		entries = []entry{}
-	}
+	entries := newFileEntries(files)
 	writeJSON(w, http.StatusOK, map[string]interface{}{"files": entries})
 }
 
@@ -617,6 +624,7 @@ func (h *FileHandler) UploadChunk(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "未授权")
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 20<<20)
 	uploadID := r.FormValue("upload_id")
 	indexStr := r.FormValue("index")
 	if uploadID == "" || indexStr == "" {
@@ -628,7 +636,6 @@ func (h *FileHandler) UploadChunk(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "无效的分片索引")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 20<<20)
 	file, _, err := r.FormFile("chunk")
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "请选择分片文件")

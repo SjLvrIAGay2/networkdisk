@@ -4,6 +4,8 @@ port = 24003
 read_timeout = "30s"
 write_timeout = "60s"
 shutdown_timeout = "30s"
+rate_limit = 60
+rate_limit_window = "1m"
 
 [database]
 host = "127.0.0.1"
@@ -20,6 +22,10 @@ root = "./storage"
 max_file_size = 524288000
 thumbnail_max_size = 20971520
 thumbnail_quality = 80
+chunk_size = 10485760
+chunk_clean_timeout = "24h"
+auto_clean_recycle_days = 30
+temp_link_ttl = "1h"
 ffmpeg_path = ""
 
 [upload]
@@ -29,16 +35,20 @@ detect_mime = true
 on_name_conflict = "rename"
 
 [auth]
-jwt_secret = "change-me-to-a-random-secret"
+jwt_secret = "ucOfaMgA3pMB55ZdTOyKPVAKr+ZZlH4ktbZag26pThsG49kf23aLwv+7AYUdhw6SFINUj8FtVG3lwUvdkQVPew=="
 jwt_expire = "15m"
 refresh_expire = "168h"
 bcrypt_cost = 12
+totp_issuer = "NetworkDisk"
 
 [share]
 default_expire = ""
 max_password_attempts = 5
+bcrypt_cost = 6
+password_rate_limit_reset = "15m"
 
 [log]
 level = "info"
 format = "pattern"
 file = "logs/log.log"
+audit_retention_days = 365

@@ -889,6 +889,45 @@ func (s *Store) RecentFiles(userID int64, limit int) ([]*model.File, error) {
 	return files, nil
 }
 
+func (s *Store) FilesByMimePrefixes(userID int64, prefixes []string) ([]*model.File, error) {
+	userID, err := mustBePositive(userID)
+	if err != nil {
+		return nil, fmt.Errorf("按MIME前缀查找文件：%w", err)
+	}
+	if len(prefixes) == 0 {
+		return nil, fmt.Errorf("按MIME前缀查找文件：至少需要一个前缀")
+	}
+	conditions := make([]string, len(prefixes))
+	args := make([]interface{}, len(prefixes)+1)
+	args[0] = userID
+	for i, p := range prefixes {
+		conditions[i] = "mime_type LIKE ?"
+		args[i+1] = p + "%"
+	}
+	query := fmt.Sprintf("SELECT id, user_id, parent_id, name, is_dir, size, file_hash, storage_key, thumbnail_key, mime_type, is_starred, is_deleted, deleted_at, created_at, updated_at FROM files WHERE user_id = ? AND is_deleted = 0 AND is_dir = 0 AND (%s) ORDER BY updated_at DESC", strings.Join(conditions, " OR "))
+	rows, err := s.DB.QueryContext(context.Background(), query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("按MIME前缀查找文件：%w", err)
+	}
+	defer rows.Close()
+	var files []*model.File
+	for rows.Next() {
+		f := &model.File{}
+		var deletedAt sql.NullTime
+		if err := rows.Scan(&f.ID, &f.UserID, &f.ParentID, &f.Name, &f.IsDir, &f.Size, &f.FileHash, &f.StorageKey, &f.ThumbnailKey, &f.MimeType, &f.IsStarred, &f.IsDeleted, &deletedAt, &f.CreatedAt, &f.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("mime prefix scan: %w", err)
+		}
+		if deletedAt.Valid {
+			f.DeletedAt = &deletedAt.Time
+		}
+		files = append(files, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("mime prefix iterate: %w", err)
+	}
+	return files, nil
+}
+
 func mustBePositive(id int64) (int64, error) {
 	if id <= 0 {
 		return 0, fmt.Errorf("ID必须为正数，当前值为%d", id)

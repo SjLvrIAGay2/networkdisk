@@ -219,6 +219,150 @@
     }
 }
 
+.category-bar {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 16px;
+    padding: 4px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow-x: auto;
+}
+
+.category-tab {
+    padding: 6px 14px;
+    font-size: 13px;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    background: transparent;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    transition: all 0.15s ease;
+}
+
+.category-tab:hover {
+    background: var(--border);
+    color: var(--text);
+}
+
+.category-tab.active {
+    background: var(--primary);
+    color: #ffffff;
+}
+
+.file-list-header {
+    display: flex;
+    align-items: center;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    gap: 8px;
+}
+
+.col-name {
+    flex: 1;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-secondary);
+}
+
+.col-actions {
+    flex: 0 0 auto;
+    min-width: 160px;
+}
+
+.col-size {
+    width: 80px;
+    text-align: right;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-secondary);
+}
+
+.col-time {
+    width: 100px;
+    text-align: right;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-secondary);
+}
+
+.file-actions {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 4px;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+}
+
+.file-row:hover .file-actions {
+    opacity: 1;
+}
+
+.file-size-cell {
+    width: 80px;
+    text-align: right;
+    font-size: 13px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.file-time-cell {
+    width: 100px;
+    text-align: right;
+    font-size: 13px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.action-btn {
+    font-size: 12px;
+    padding: 3px 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: none;
+    cursor: pointer;
+    color: var(--text);
+    white-space: nowrap;
+}
+
+.action-btn:hover {
+    background: var(--border);
+}
+
+.action-restore {
+    border-color: var(--primary);
+    color: var(--primary);
+}
+
+.action-delperm {
+    border-color: var(--danger);
+    color: var(--danger);
+}
+
+.action-more {
+    opacity: 0.5;
+    cursor: default;
+}
+
+@media (min-width: 769px) {
+    .file-row {
+        cursor: default;
+    }
+}
+
+@media (max-width: 768px) {
+    .col-size,
+    .file-size-cell {
+        display: none;
+    }
+    .col-actions,
+    .file-actions {
+        min-width: auto;
+    }
+}
+
 @media (prefers-color-scheme: dark) {
     .drag-overlay {
         background: rgba(59, 130, 246, 0.12);
