@@ -59,6 +59,7 @@ func New(authH *handler.AuthHandler, fileH *handler.FileHandler, sysH *handler.S
 	mux.Handle("POST /api/files/upload/chunk", wrap(fileH.UploadChunk, authMw, csrfMw))
 	mux.Handle("POST /api/files/upload/complete", wrap(fileH.CompleteUpload, authMw, csrfMw))
 	mux.Handle("GET /api/files/upload/status/{uploadId}", wrap(fileH.UploadStatus, authMw))
+	mux.Handle("DELETE /api/files/upload/cancel/{uploadId}", wrap(fileH.CancelUpload, authMw, csrfMw))
 
 	mux.Handle("GET /api/files/preview/{id}", wrap(fileH.Preview, authMw))
 	mux.Handle("POST /api/files/{id}/temp-link", wrap(fileH.TempLink, authMw, csrfMw))
@@ -118,6 +119,11 @@ func New(authH *handler.AuthHandler, fileH *handler.FileHandler, sysH *handler.S
 	auditTmpl := template.Must(template.ParseFiles("web/templates/base.html", "web/templates/admin_audit.html"))
 	mux.Handle("GET /audit", wrap(func(w http.ResponseWriter, r *http.Request) {
 		auditTmpl.ExecuteTemplate(w, "admin_audit.html", nil)
+	}, csrfMw))
+
+	transferTmpl := template.Must(template.ParseFiles("web/templates/base.html", "web/templates/transfer.html"))
+	mux.Handle("GET /transfer", wrap(func(w http.ResponseWriter, r *http.Request) {
+		transferTmpl.ExecuteTemplate(w, "transfer.html", nil)
 	}, csrfMw))
 
 	mux.Handle("GET /s/{token}", wrap(shareH.ServePublicPage))

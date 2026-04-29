@@ -59,9 +59,18 @@ func (h *FileHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	resp := map[string]interface{}{
 		"files": newFileEntries(files),
-	})
+	}
+	if parentID != nil {
+		breadcrumb, err := h.svc.GetBreadcrumb(*parentID)
+		if err != nil {
+			logging.Error(r.Context(), "file", "get breadcrumb failed", "error", err)
+		} else {
+			resp["breadcrumb"] = breadcrumb
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *FileHandler) SharedFiles(w http.ResponseWriter, r *http.Request) {
@@ -70,13 +79,35 @@ func (h *FileHandler) SharedFiles(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "未授权")
 		return
 	}
-	files, err := h.svc.SharedFiles(userID)
+	items, err := h.svc.SharedFiles(userID)
 	if err != nil {
 		logging.Error(r.Context(), "file", "shared files failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"files": newFileEntries(files)})
+	entries := make([]fileEntry, 0, len(items))
+	for _, item := range items {
+		e := fileEntry{
+			ID:           item.File.ID,
+			Name:         item.File.Name,
+			IsDir:        item.File.IsDir,
+			Size:         item.File.Size,
+			MimeType:     item.File.MimeType,
+			ThumbnailKey: item.File.ThumbnailKey,
+			ParentID:     item.File.ParentID,
+			CreatedAt:    item.File.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			UpdatedAt:    item.File.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+			ShareToken:   item.ShareToken,
+		}
+		if item.File.DeletedAt != nil {
+			ds := item.File.DeletedAt.Format("2006-01-02T15:04:05Z")
+			e.DeletedAt = &ds
+		}
+		sid := item.ShareID
+		e.ShareID = &sid
+		entries = append(entries, e)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"files": entries})
 }
 
 func (h *FileHandler) Upload(w http.ResponseWriter, r *http.Request) {
@@ -90,6 +121,7 @@ func (h *FileHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "解析上传表单失败")
 		return
 	}
+	defer r.MultipartForm.RemoveAll()
 
 	file, header, err := r.FormFile("file")
 	if err != nil {
@@ -162,12 +194,16 @@ func (h *FileHandler) Download(w http.ResponseWriter, r *http.Request) {
 
 	cd := mime.FormatMediaType("attachment", map[string]string{"filename": f.Name})
 	w.Header().Set("Content-Disposition", cd)
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Length", strconv.FormatInt(f.Size, 10))
-	w.WriteHeader(http.StatusOK)
-	if _, err := io.Copy(w, reader); err != nil {
-		logging.Error(r.Context(), "file", "download copy failed", "error", err)
-		return
+	if seeker, ok := reader.(io.ReadSeeker); ok {
+		http.ServeContent(w, r, f.Name, f.CreatedAt, seeker)
+	} else {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", strconv.FormatInt(f.Size, 10))
+		w.WriteHeader(http.StatusOK)
+		if _, err := io.Copy(w, reader); err != nil {
+			logging.Error(r.Context(), "file", "download copy failed", "error", err)
+			return
+		}
 	}
 	h.svc.RecordAudit(userID, "download", "file", id, f.Name, middleware.ClientIP(r, ""))
 }
@@ -624,7 +660,11 @@ func (h *FileHandler) UploadChunk(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "未授权")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 20<<20)
+	if err := r.ParseMultipartForm(maxUploadMemory); err != nil {
+		writeError(w, http.StatusBadRequest, "解析上传分片失败")
+		return
+	}
+	defer r.MultipartForm.RemoveAll()
 	uploadID := r.FormValue("upload_id")
 	indexStr := r.FormValue("index")
 	if uploadID == "" || indexStr == "" {
@@ -644,7 +684,7 @@ func (h *FileHandler) UploadChunk(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 	if err := h.svc.UploadChunk(uploadID, index, file, userID); err != nil {
 		logging.Error(r.Context(), "file", "upload chunk failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "服务器内部错误")
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"index": index, "ok": true})
@@ -707,6 +747,25 @@ func (h *FileHandler) UploadStatus(w http.ResponseWriter, r *http.Request) {
 		"chunk_count": session.ChunkCount,
 		"completed":   completed,
 	})
+}
+
+func (h *FileHandler) CancelUpload(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r)
+	if userID == 0 {
+		writeError(w, http.StatusUnauthorized, "未授权")
+		return
+	}
+	uploadID := r.PathValue("uploadId")
+	if uploadID == "" {
+		writeError(w, http.StatusBadRequest, "缺少上传ID")
+		return
+	}
+	if err := h.svc.CancelUpload(uploadID, userID); err != nil {
+		logging.Error(r.Context(), "file", "cancel upload failed", "error", err)
+		writeError(w, http.StatusNotFound, "上传会话不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "已取消"})
 }
 
 func (h *FileHandler) Preview(w http.ResponseWriter, r *http.Request) {

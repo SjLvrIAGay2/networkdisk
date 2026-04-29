@@ -28,7 +28,7 @@
         <button class="btn" style="background:var(--surface);border:1px solid var(--border);" onclick="refreshFiles()">刷新</button>
     </div>
     <div id="breadcrumb" style="margin-bottom:12px;font-size:13px;color:var(--text-secondary);">
-        <a href="#" onclick="navigateTo(null);return false;" style="color:var(--primary);text-decoration:none;">根目录</a>
+        <a href="#" onclick="navigateTo(null);return false;" style="color:var(--primary);text-decoration:none;">我的网盘</a>
     </div>
     <div class="card" style="padding:0;">
         <div class="file-list-header">
@@ -97,6 +97,38 @@
         </div>
     </div>
 </div>
+
+<div id="moveCopyModal" class="modal-overlay" style="display:none;">
+    <div class="modal-panel">
+        <div class="modal-header">
+            <h3 id="moveCopyTitle">移动到</h3>
+            <button class="modal-close" onclick="hideMoveCopyModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div class="folder-picker-breadcrumb" id="pickerBreadcrumb">
+                <a href="#" onclick="navigatePickerTo(null);return false;">我的网盘</a>
+            </div>
+            <div class="folder-picker-list" id="pickerFolderList">
+                <div class="loading">加载中...</div>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn" style="background:var(--border);" onclick="hideMoveCopyModal()">取消</button>
+            <button class="btn btn-primary" id="moveCopyConfirmBtn" onclick="confirmMoveCopy()">移动到此</button>
+        </div>
+    </div>
+</div>
+
+<div id="detailModal" class="modal-overlay" style="display:none;">
+    <div class="modal-panel">
+        <div class="modal-header">
+            <h3>详细信息</h3>
+            <button class="modal-close" onclick="hideDetailModal()">&times;</button>
+        </div>
+        <div class="modal-body" id="detailBody">
+        </div>
+    </div>
+</div>
 {{end}}
 {{define "scripts"}}
 <script>
@@ -104,6 +136,15 @@ var currentDir = null;
 var currentCategory = 'all';
 var renameFileId = null;
 var shareFileId = null;
+var _fileDataMap = {};
+var _lastBreadcrumb = [];
+var _openMoreFileId = null;
+var _pickerDir = null;
+var _pickerBreadcrumb = [];
+var _moveCopyFileId = null;
+var _moveCopyAction = '';
+var _inlineRenameFileId = null;
+var _inlineRenameOriginal = '';
 
 (function() {
     var token = localStorage.getItem('access_token');
@@ -133,6 +174,22 @@ var shareFileId = null;
 function navigateTo(dirId) {
     currentDir = dirId;
     refreshFiles();
+}
+
+function renderBreadcrumb(items) {
+    var bc = document.getElementById('breadcrumb');
+    var html = '<a href="#" onclick="navigateTo(null);return false;" style="color:var(--primary);text-decoration:none;">我的网盘</a>';
+    if (items && items.length > 0) {
+        for (var i = 0; i < items.length; i++) {
+            html += ' <span style="margin:0 4px;">/</span> ';
+            if (i === items.length - 1) {
+                html += '<span style="color:var(--text-secondary);">' + escapeHtml(items[i].name) + '</span>';
+            } else {
+                html += '<a href="#" onclick="navigateTo(' + items[i].id + ');return false;" style="color:var(--primary);text-decoration:none;">' + escapeHtml(items[i].name) + '</a>';
+            }
+        }
+    }
+    bc.innerHTML = html;
 }
 
 function switchCategory(category) {
@@ -184,13 +241,18 @@ function refreshFiles() {
         if (!r.ok) throw new Error('failed');
         return r.json();
     }).then(function(data) {
+        _lastBreadcrumb = data.breadcrumb || [];
         renderFiles(data.files);
+        renderBreadcrumb(data.breadcrumb);
     }).catch(function() {
         document.getElementById('fileList').innerHTML = '<div class="error-state">加载失败</div>';
     });
 }
 
 function renderFiles(files) {
+    if (currentCategory === 'recent') {
+        files = files.filter(function(f) { return !f.is_dir; });
+    }
     var container = document.getElementById('fileList');
     if (!files || files.length === 0) {
         var emptyMsg = '暂无文件';
@@ -199,13 +261,17 @@ function renderFiles(files) {
         else if (currentCategory === 'shared') emptyMsg = '暂无分享';
         else if (currentCategory === 'recycle') emptyMsg = '回收站为空';
         container.innerHTML = '<div class="empty-state">' + emptyMsg + '</div>';
+        _fileDataMap = {};
         return;
     }
     var isRecycle = (currentCategory === 'recycle');
     var isAll = (currentCategory === 'all');
+    var isShared = (currentCategory === 'shared');
+    _fileDataMap = {};
     var html = '';
     for (var i = 0; i < files.length; i++) {
         var f = files[i];
+        _fileDataMap[f.id] = f;
         var icon = f.is_dir ? '📁' : '📄';
         var nameDisplay = escapeHtml(f.name);
         var sizeStr = f.is_dir ? '-' : formatSize(f.size);
@@ -225,13 +291,16 @@ function renderFiles(files) {
         if (isRecycle) {
             html += '<button class="action-btn action-restore" onclick="restoreFile(' + f.id + ')">恢复</button>';
             html += '<button class="action-btn action-delperm" onclick="permanentDelete(' + f.id + ',' + (f.is_dir ? 'true' : 'false') + ')">永久删除</button>';
+        } else if (isShared) {
+            html += '<button class="action-btn" style="border-color:var(--primary);color:var(--primary);" onclick="copyShareLink(\'' + escapeJsAttr(f.share_token) + '\')">复制链接</button>';
+            html += '<button class="action-btn" style="border-color:var(--danger);color:var(--danger);" onclick="cancelShare(' + (f.share_id || 0) + ')">取消分享</button>';
         } else {
             if (!f.is_dir) {
                 html += '<button class="action-btn" style="border-color:var(--primary);color:var(--primary);" onclick="showCreateShareModal(' + f.id + ')">分享</button>';
                 html += '<button class="action-btn" onclick="downloadFile(' + f.id + ',\'' + escapeJsAttr(f.name) + '\')">下载</button>';
             }
             html += '<button class="action-btn" style="border-color:var(--danger);color:var(--danger);" onclick="deleteFile(' + f.id + ')">删除</button>';
-            html += '<button class="action-btn action-more">更多</button>';
+            html += '<button class="action-btn action-more" onclick="openMoreMenu(event,' + f.id + ')">更多</button>';
         }
         html += '</div>';
         html += '<div class="file-size-cell">' + sizeStr + '</div>';
@@ -398,21 +467,368 @@ function doCreateShare() {
     });
 }
 
-function handleUpload(input) {
-    var file = input.files[0];
-    if (!file) return;
-    var form = new FormData();
-    form.append('file', file);
-    if (currentDir !== null) form.append('dir_id', currentDir);
-    apiFetch('/api/files/upload', {
-        method: 'POST',
-        headers: { 'X-CSRF-Token': getCSRFToken() },
-        body: form
+function copyShareLink(token) {
+    var url = window.location.origin + '/s/' + token;
+    navigator.clipboard.writeText(url).then(function() {
+        showToast('链接已复制');
+    }).catch(function() {
+        var input = document.createElement('input');
+        input.value = url;
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand('copy');
+        document.body.removeChild(input);
+        showToast('链接已复制');
+    });
+}
+
+function cancelShare(shareId) {
+    if (!confirm('确认移除此分享？')) return;
+    apiFetch('/api/shares/' + shareId, {
+        method: 'DELETE',
+        headers: { 'X-CSRF-Token': getCSRFToken() }
     }).then(function(r) {
         if (r.ok) { refreshFiles(); }
-        else { r.json().then(function(d) { alert(d.error || '上传失败'); }); }
-    }).catch(function() { alert('上传失败'); });
+        else { r.json().then(function(d) { alert(d.error || '移除失败'); }); }
+    }).catch(function() { alert('移除失败'); });
+}
+
+function handleUpload(input) {
+    var files = input.files;
+    if (!files || files.length === 0) return;
+    for (var i = 0; i < files.length; i++) {
+        uploadFileChunked(files[i]);
+    }
     input.value = '';
+}
+
+function openMoreMenu(event, fileId) {
+    event.stopPropagation();
+    closeMoreMenu();
+    _openMoreFileId = fileId;
+    var f = _fileDataMap[fileId];
+    if (!f) return;
+    var menu = document.createElement('div');
+    menu.className = 'more-dropdown';
+    menu.id = 'moreDropdown';
+    var items = [
+        { label: '移动到', action: 'move' },
+        { label: '复制到', action: 'copy' },
+        { label: '重命名', action: 'rename' },
+        { label: '删除', action: 'delete', danger: true },
+        { label: '新建文件夹', action: 'mkdir' },
+        { label: '详细信息', action: 'detail' }
+    ];
+    if (!f.is_dir) {
+        items.push({ label: '分享', action: 'share' });
+        items.push({ label: '下载', action: 'download' });
+    }
+    for (var i = 0; i < items.length; i++) {
+        var item = items[i];
+        var btn = document.createElement('button');
+        btn.className = 'more-dropdown-item' + (item.danger ? ' danger' : '');
+        btn.textContent = item.label;
+        btn.onclick = (function(action) {
+            return function(e) { e.stopPropagation(); handleMoreAction(action, fileId); };
+        })(item.action);
+        menu.appendChild(btn);
+    }
+    menu.style.top = event.clientY + 'px';
+    menu.style.left = event.clientX + 'px';
+    var rect = menu.getBoundingClientRect();
+    if (rect.right > window.innerWidth) menu.style.left = (event.clientX - rect.width) + 'px';
+    if (rect.bottom > window.innerHeight) menu.style.top = (event.clientY - rect.height) + 'px';
+    document.body.appendChild(menu);
+    setTimeout(function() {
+        document.addEventListener('click', closeMoreMenuOnClick, { once: true });
+    }, 0);
+}
+
+function closeMoreMenuOnClick() {
+    closeMoreMenu();
+}
+
+function closeMoreMenu() {
+    var menu = document.getElementById('moreDropdown');
+    if (menu) menu.parentNode.removeChild(menu);
+    _openMoreFileId = null;
+    document.removeEventListener('click', closeMoreMenuOnClick);
+}
+
+function handleMoreAction(action, fileId) {
+    closeMoreMenu();
+    var f = _fileDataMap[fileId];
+    if (!f) return;
+    switch (action) {
+        case 'move':
+            showMoveCopyModal(fileId, 'move');
+            break;
+        case 'copy':
+            showMoveCopyModal(fileId, 'copy');
+            break;
+        case 'rename':
+            startInlineRename(fileId);
+            break;
+        case 'delete':
+            deleteFile(fileId);
+            break;
+        case 'mkdir':
+            showMkdirModal();
+            break;
+        case 'detail':
+            showDetailModal(fileId);
+            break;
+        case 'share':
+            showCreateShareModal(fileId);
+            break;
+        case 'download':
+            downloadFile(fileId, f.name);
+            break;
+    }
+}
+
+function showMoveCopyModal(fileId, action) {
+    _moveCopyFileId = fileId;
+    _moveCopyAction = action;
+    _pickerDir = null;
+    _pickerBreadcrumb = [];
+    var title = document.getElementById('moveCopyTitle');
+    title.textContent = action === 'move' ? '移动到' : '复制到';
+    var confirmBtn = document.getElementById('moveCopyConfirmBtn');
+    confirmBtn.textContent = action === 'move' ? '移动到此' : '复制到此';
+    document.getElementById('moveCopyModal').style.display = 'flex';
+    loadPickerFolders(null);
+}
+
+function hideMoveCopyModal() {
+    document.getElementById('moveCopyModal').style.display = 'none';
+    _moveCopyFileId = null;
+    _moveCopyAction = '';
+}
+
+document.getElementById('moveCopyModal').addEventListener('click', function(e) {
+    if (e.target === this) hideMoveCopyModal();
+});
+
+document.getElementById('detailModal').addEventListener('click', function(e) {
+    if (e.target === this) hideDetailModal();
+});
+
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+        closeMoreMenu();
+        if (_inlineRenameFileId) cancelInlineRename();
+        hideMoveCopyModal();
+        hideDetailModal();
+    }
+});
+
+document.addEventListener('scroll', function() {
+    closeMoreMenu();
+}, true);
+
+function loadPickerFolders(dirId) {
+    var list = document.getElementById('pickerFolderList');
+    list.innerHTML = '<div class="loading">加载中...</div>';
+    var url = '/api/files';
+    if (dirId !== null) url += '?dir_id=' + dirId;
+    apiFetch(url, {}).then(function(r) {
+        if (!r.ok) throw new Error('failed');
+        return r.json();
+    }).then(function(data) {
+        var folders = data.files.filter(function(f) { return f.is_dir; });
+        renderPickerFolders(folders, data.breadcrumb || []);
+    }).catch(function() {
+        list.innerHTML = '<div class="error-state">加载失败</div>';
+    });
+}
+
+function renderPickerFolders(folders, breadcrumb) {
+    _pickerBreadcrumb = breadcrumb;
+    var list = document.getElementById('pickerFolderList');
+    var bc = document.getElementById('pickerBreadcrumb');
+    var bcHtml = '<a href="#" onclick="navigatePickerTo(null);return false;">我的网盘</a>';
+    for (var i = 0; i < breadcrumb.length; i++) {
+        bcHtml += ' / ';
+        if (i === breadcrumb.length - 1) {
+            bcHtml += '<span>' + escapeHtml(breadcrumb[i].name) + '</span>';
+        } else {
+            bcHtml += '<a href="#" onclick="navigatePickerTo(' + breadcrumb[i].id + ');return false;">' + escapeHtml(breadcrumb[i].name) + '</a>';
+        }
+    }
+    bc.innerHTML = bcHtml;
+    if (folders.length === 0) {
+        list.innerHTML = '<div class="folder-picker-empty">此目录下没有文件夹</div>';
+    } else {
+        var html = '';
+        if (_pickerDir !== null) {
+            html += '<div class="folder-picker-item folder-picker-up" onclick="navigatePickerUp()">📁 ..</div>';
+        }
+        for (var i = 0; i < folders.length; i++) {
+            html += '<div class="folder-picker-item" onclick="navigatePickerTo(' + folders[i].id + ')">📁 ' + escapeHtml(folders[i].name) + '</div>';
+        }
+        list.innerHTML = html;
+    }
+}
+
+function navigatePickerTo(dirId) {
+    _pickerDir = dirId;
+    loadPickerFolders(dirId);
+}
+
+function navigatePickerUp() {
+    if (_pickerBreadcrumb.length === 0) {
+        _pickerDir = null;
+        loadPickerFolders(null);
+        return;
+    }
+    var parentId = null;
+    if (_pickerBreadcrumb.length >= 2) {
+        parentId = _pickerBreadcrumb[_pickerBreadcrumb.length - 2].id;
+    }
+    _pickerDir = parentId;
+    loadPickerFolders(parentId);
+}
+
+function confirmMoveCopy() {
+    if (!_moveCopyFileId) return;
+    var fileId = _moveCopyFileId;
+    var action = _moveCopyAction;
+    var targetDir = _pickerDir;
+    hideMoveCopyModal();
+    if (action === 'move') {
+        apiFetch('/api/files/' + fileId, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCSRFToken() },
+            body: JSON.stringify({ parent_id: targetDir })
+        }).then(function(r) {
+            if (r.ok) { refreshFiles(); showToast('移动成功', 'success'); }
+            else { r.json().then(function(d) { showToast(d.error || '移动失败', 'error'); }); }
+        }).catch(function() { showToast('移动失败', 'error'); });
+    } else {
+        apiFetch('/api/files/' + fileId + '/copy', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCSRFToken() },
+            body: JSON.stringify({ parent_id: targetDir })
+        }).then(function(r) {
+            if (r.ok) { refreshFiles(); showToast('复制成功', 'success'); }
+            else { r.json().then(function(d) { showToast(d.error || '复制失败', 'error'); }); }
+        }).catch(function() { showToast('复制失败', 'error'); });
+    }
+}
+
+function startInlineRename(fileId) {
+    cancelInlineRename();
+    var f = _fileDataMap[fileId];
+    if (!f) return;
+    _inlineRenameFileId = fileId;
+    var row = document.querySelector('[data-file-id="' + fileId + '"]');
+    if (!row) return;
+    var nameCell = row.querySelector('.file-name');
+    if (!nameCell) return;
+    _inlineRenameOriginal = nameCell.innerHTML;
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'inline-rename-input';
+    input.value = f.name;
+    nameCell.innerHTML = '';
+    nameCell.appendChild(input);
+    input.focus();
+    input.select();
+    if (!f.is_dir && f.name.lastIndexOf('.') > 0) {
+        var dotPos = f.name.lastIndexOf('.');
+        input.setSelectionRange(0, dotPos);
+    }
+    input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') { e.preventDefault(); confirmInlineRename(); }
+        if (e.key === 'Escape') { e.preventDefault(); cancelInlineRename(); }
+    });
+    input.addEventListener('blur', function() {
+        setTimeout(function() {
+            if (_inlineRenameFileId === fileId) cancelInlineRename();
+        }, 100);
+    });
+}
+
+function cancelInlineRename() {
+    if (!_inlineRenameFileId) return;
+    var row = document.querySelector('[data-file-id="' + _inlineRenameFileId + '"]');
+    if (row) {
+        var nameCell = row.querySelector('.file-name');
+        if (nameCell) nameCell.innerHTML = _inlineRenameOriginal;
+    }
+    _inlineRenameFileId = null;
+    _inlineRenameOriginal = '';
+}
+
+function confirmInlineRename() {
+    if (!_inlineRenameFileId) return;
+    var fileId = _inlineRenameFileId;
+    var row = document.querySelector('[data-file-id="' + fileId + '"]');
+    var newName = '';
+    if (row) {
+        var input = row.querySelector('.inline-rename-input');
+        if (input) newName = input.value.trim();
+    }
+    _inlineRenameFileId = null;
+    _inlineRenameOriginal = '';
+    if (!newName) {
+        refreshFiles();
+        return;
+    }
+    apiFetch('/api/files/' + fileId, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCSRFToken() },
+        body: JSON.stringify({ name: newName })
+    }).then(function(r) {
+        if (r.ok) { refreshFiles(); }
+        else { r.json().then(function(d) { showToast(d.error || '重命名失败', 'error'); refreshFiles(); }); }
+    }).catch(function() { showToast('重命名失败', 'error'); refreshFiles(); });
+}
+
+function showDetailModal(fileId) {
+    var f = _fileDataMap[fileId];
+    if (!f) return;
+    var icon = f.is_dir ? '📁' : '📄';
+    var typeStr = f.is_dir ? '文件夹' : (f.mime_type || '未知');
+    var sizeStr = f.is_dir ? '-' : formatSize(f.size);
+    var modifiedStr = formatDateTime(f.updated_at || f.created_at);
+    var pathParts = ['我的网盘'];
+    if (currentCategory === 'all' && f.parent_id === currentDir) {
+        for (var i = 0; i < _lastBreadcrumb.length; i++) {
+            pathParts.push(_lastBreadcrumb[i].name);
+        }
+    }
+    pathParts.push(f.name);
+    var locationStr = pathParts.join('/');
+    var body = document.getElementById('detailBody');
+    body.innerHTML =
+        '<div class="detail-header">' +
+        '<div class="detail-icon">' + icon + '</div>' +
+        '<div class="detail-name">' + escapeHtml(f.name) + '</div>' +
+        '</div>' +
+        '<table class="detail-table">' +
+        '<tr><td>类型</td><td>' + escapeHtml(typeStr) + '</td></tr>' +
+        '<tr><td>位置</td><td>' + escapeHtml(locationStr) + '</td></tr>' +
+        '<tr><td>大小</td><td>' + sizeStr + (f.size > 0 ? ' (' + f.size + '字节)' : '') + '</td></tr>' +
+        '<tr><td>修改时间</td><td>' + modifiedStr + '</td></tr>' +
+        '</table>';
+    document.getElementById('detailModal').style.display = 'flex';
+}
+
+function hideDetailModal() {
+    document.getElementById('detailModal').style.display = 'none';
+}
+
+function formatDateTime(isoString) {
+    if (!isoString) return '-';
+    try {
+        var d = new Date(isoString);
+        if (isNaN(d.getTime())) return isoString.substring(0, 10);
+        return d.getFullYear() + '年' + (d.getMonth() + 1) + '月' + d.getDate() + '日';
+    } catch (e) {
+        return isoString.substring(0, 10);
+    }
 }
 </script>
 {{end}}

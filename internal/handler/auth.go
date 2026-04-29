@@ -300,7 +300,10 @@ type fileEntry struct {
 	ThumbnailKey string  `json:"thumbnail_key"`
 	ParentID     *int64  `json:"parent_id"`
 	CreatedAt    string  `json:"created_at"`
+	UpdatedAt    string  `json:"updated_at"`
 	DeletedAt    *string `json:"deleted_at,omitempty"`
+	ShareID      *int64  `json:"share_id,omitempty"`
+	ShareToken   string  `json:"share_token,omitempty"`
 }
 
 func newFileEntries(files []*model.File) []fileEntry {
@@ -315,6 +318,7 @@ func newFileEntries(files []*model.File) []fileEntry {
 			ThumbnailKey: f.ThumbnailKey,
 			ParentID:     f.ParentID,
 			CreatedAt:    f.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			UpdatedAt:    f.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 		}
 		if f.DeletedAt != nil {
 			ds := f.DeletedAt.Format("2006-01-02T15:04:05Z")

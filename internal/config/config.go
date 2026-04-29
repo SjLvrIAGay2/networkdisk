@@ -19,6 +19,7 @@ type ServerConfig struct {
 	Port             int      `toml:"port"`
 	ReadTimeout      string   `toml:"read_timeout"`
 	WriteTimeout     string   `toml:"write_timeout"`
+	IdleTimeout      string   `toml:"idle_timeout"`
 	ShutdownTimeout  string   `toml:"shutdown_timeout"`
 	RateLimit        int      `toml:"rate_limit"`
 	RateLimitWindow  string   `toml:"rate_limit_window"`
@@ -96,8 +97,9 @@ var (
 var defaults = map[string]interface{}{
 	"server.host":               "0.0.0.0",
 	"server.port":               8080,
-	"server.read_timeout":       "30s",
-	"server.write_timeout":      "60s",
+	"server.read_timeout":       "300s",
+	"server.write_timeout":      "300s",
+		"server.idle_timeout":       "120s",
 	"server.shutdown_timeout":   "10s",
 	"server.rate_limit":         60,
 	"server.rate_limit_window":  "1m",
@@ -147,6 +149,7 @@ var envMapping = map[string]string{
 	"server.port":                  "NETWORKDISK_SERVER_PORT",
 	"server.read_timeout":          "NETWORKDISK_SERVER_READ_TIMEOUT",
 	"server.write_timeout":         "NETWORKDISK_SERVER_WRITE_TIMEOUT",
+		"server.idle_timeout":          "NETWORKDISK_SERVER_IDLE_TIMEOUT",
 	"server.shutdown_timeout":      "NETWORKDISK_SERVER_SHUTDOWN_TIMEOUT",
 	"server.rate_limit":            "NETWORKDISK_SERVER_RATE_LIMIT",
 	"server.rate_limit_window":     "NETWORKDISK_SERVER_RATE_LIMIT_WINDOW",
@@ -286,6 +289,7 @@ func fieldName(tomlKey string) string {
 	mapping := map[string]string{
 		"read_timeout":       "ReadTimeout",
 		"write_timeout":      "WriteTimeout",
+		"idle_timeout":       "IdleTimeout",
 		"shutdown_timeout":   "ShutdownTimeout",
 		"max_open_conns":     "MaxOpenConns",
 		"max_idle_conns":     "MaxIdleConns",
@@ -495,11 +499,15 @@ func (c *Config) RefreshExpireDuration() time.Duration {
 }
 
 func (c *Config) ReadTimeoutDuration() time.Duration {
-	return durationOrDefault("server.read_timeout", c.Server.ReadTimeout, 30*time.Second)
+	return durationOrDefault("server.read_timeout", c.Server.ReadTimeout, 300*time.Second)
 }
 
 func (c *Config) WriteTimeoutDuration() time.Duration {
-	return durationOrDefault("server.write_timeout", c.Server.WriteTimeout, 60*time.Second)
+	return durationOrDefault("server.write_timeout", c.Server.WriteTimeout, 300*time.Second)
+}
+
+func (c *Config) IdleTimeoutDuration() time.Duration {
+	return durationOrDefault("server.idle_timeout", c.Server.IdleTimeout, 120*time.Second)
 }
 
 func (c *Config) ShutdownTimeoutDuration() time.Duration {

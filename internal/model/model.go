@@ -53,6 +53,11 @@ type File struct {
 	UpdatedAt    time.Time  `json:"updated_at"`
 }
 
+type BreadcrumbItem struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
 type AuditLog struct {
 	ID         int64     `json:"id"`
 	UserID     int64     `json:"user_id"`

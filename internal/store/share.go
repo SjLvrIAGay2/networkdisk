@@ -188,34 +188,42 @@ func (s *Store) TempDownloadByToken(token string) (*model.TempDownload, error) {
 	return td, nil
 }
 
-func (s *Store) FilesWithActiveShares(ownerID int64) ([]*model.File, error) {
+type FileWithShare struct {
+	File       *model.File
+	ShareID    int64
+	ShareToken string
+}
+
+func (s *Store) FilesWithActiveShares(ownerID int64) ([]FileWithShare, error) {
 	if ownerID <= 0 {
 		return nil, fmt.Errorf("files with active shares: owner_id must be positive")
 	}
 	rows, err := s.DB.QueryContext(context.Background(),
-		"SELECT f.id, f.user_id, f.parent_id, f.name, f.is_dir, f.size, f.file_hash, f.storage_key, f.thumbnail_key, f.mime_type, f.is_starred, f.is_deleted, f.deleted_at, f.created_at, f.updated_at FROM files f INNER JOIN (SELECT file_id, MAX(created_at) AS max_created FROM shares WHERE owner_id = ? AND (expire_at IS NULL OR expire_at > NOW()) GROUP BY file_id) s ON f.id = s.file_id WHERE f.is_deleted = 0 ORDER BY s.max_created DESC",
-		ownerID,
+		"SELECT f.id, f.user_id, f.parent_id, f.name, f.is_dir, f.size, f.file_hash, f.storage_key, f.thumbnail_key, f.mime_type, f.is_starred, f.is_deleted, f.deleted_at, f.created_at, f.updated_at, s.share_id, s.token FROM files f INNER JOIN (SELECT s1.file_id, s1.id AS share_id, s1.token, s1.created_at FROM shares s1 INNER JOIN (SELECT file_id, MAX(created_at) AS max_created FROM shares WHERE owner_id = ? AND (expire_at IS NULL OR expire_at > NOW()) GROUP BY file_id) s2 ON s1.file_id = s2.file_id AND s1.created_at = s2.max_created WHERE s1.owner_id = ? AND (s1.expire_at IS NULL OR s1.expire_at > NOW())) s ON f.id = s.file_id WHERE f.is_deleted = 0 ORDER BY s.created_at DESC",
+		ownerID, ownerID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("files with active shares: %w", err)
 	}
 	defer rows.Close()
-	var files []*model.File
+	var result []FileWithShare
 	for rows.Next() {
 		f := &model.File{}
+		var shareID int64
+		var shareToken string
 		var deletedAt sql.NullTime
-		if err := rows.Scan(&f.ID, &f.UserID, &f.ParentID, &f.Name, &f.IsDir, &f.Size, &f.FileHash, &f.StorageKey, &f.ThumbnailKey, &f.MimeType, &f.IsStarred, &f.IsDeleted, &deletedAt, &f.CreatedAt, &f.UpdatedAt); err != nil {
+		if err := rows.Scan(&f.ID, &f.UserID, &f.ParentID, &f.Name, &f.IsDir, &f.Size, &f.FileHash, &f.StorageKey, &f.ThumbnailKey, &f.MimeType, &f.IsStarred, &f.IsDeleted, &deletedAt, &f.CreatedAt, &f.UpdatedAt, &shareID, &shareToken); err != nil {
 			return nil, fmt.Errorf("files with active shares scan: %w", err)
 		}
 		if deletedAt.Valid {
 			f.DeletedAt = &deletedAt.Time
 		}
-		files = append(files, f)
+		result = append(result, FileWithShare{File: f, ShareID: shareID, ShareToken: shareToken})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("files with active shares iterate: %w", err)
 	}
-	return files, nil
+	return result, nil
 }
 
 func (s *Store) DeleteExpiredTempDownloads() (int64, error) {

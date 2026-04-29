@@ -691,6 +691,37 @@ func (s *Store) DescendantIDs(rootID int64, deleted bool) ([]int64, error) {
 	return ids, nil
 }
 
+func (s *Store) FileAncestors(fileID int64) ([]*model.File, error) {
+	fileID, err := mustBePositive(fileID)
+	if err != nil {
+		return nil, fmt.Errorf("查找祖先：%w", err)
+	}
+	rows, err := s.DB.QueryContext(context.Background(),
+		"WITH RECURSIVE ancestors AS ("+
+			"SELECT f.*, 0 AS depth FROM files f WHERE f.id = ? AND f.is_deleted = 0 "+
+			"UNION ALL "+
+			"SELECT f.*, a.depth + 1 FROM files f JOIN ancestors a ON f.id = a.parent_id AND f.is_deleted = 0"+
+			") SELECT id, name, parent_id FROM ancestors ORDER BY depth DESC",
+		fileID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("查找祖先：%w", err)
+	}
+	defer rows.Close()
+	var files []*model.File
+	for rows.Next() {
+		var f model.File
+		if err := rows.Scan(&f.ID, &f.Name, &f.ParentID); err != nil {
+			return nil, fmt.Errorf("ancestor scan: %w", err)
+		}
+		files = append(files, &f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ancestor iterate: %w", err)
+	}
+	return files, nil
+}
+
 func (s *Store) DescendantCounts(rootID int64) (int64, int64, error) {
 	rootID, err := mustBePositive(rootID)
 	if err != nil {

@@ -1,0 +1,88 @@
+{{template "base.html" .}}
+{{define "title"}}传输 - NetworkDisk{{end}}
+{{define "sidebar"}}{{end}}
+{{define "sub_sidebar"}}
+<aside class="sub-sidebar" id="subSidebar">
+    <a href="#" class="sub-sidebar-link active" data-section="upload" onclick="switchTransferSection('upload');return false;">上传</a>
+    <a href="#" class="sub-sidebar-link" data-section="download" onclick="switchTransferSection('download');return false;">下载</a>
+</aside>
+{{end}}
+{{define "content"}}
+<div class="transfer-section active" id="uploadSection">
+    <div class="category-bar" id="uploadCategoryBar">
+        <button class="category-tab active" data-tab="uploading">上传中<span class="count-badge" id="uploadUploadingCount">0</span></button>
+        <button class="category-tab" data-tab="uploadCompleted">已完成<span class="count-badge" id="uploadCompletedCount">0</span></button>
+    </div>
+    <div class="transfer-tab-content active" id="uploadUploadingTab">
+        <div class="transfer-toolbar">
+            <button class="btn btn-primary" onclick="pauseAllUploads()">全部暂停</button>
+            <button class="btn btn-primary" onclick="resumeAllUploads()">全部开始</button>
+            <button class="btn btn-primary" style="background:var(--danger)" onclick="deleteAllUploads()">全部删除</button>
+        </div>
+        <div class="card" style="padding:0">
+            <div class="file-list-header">
+                <span class="col-name">名称</span>
+                <span class="col-size">大小</span>
+                <span style="flex:0 0 auto;min-width:180px">状态</span>
+                <span class="col-actions">操作</span>
+            </div>
+            <div id="uploadUploadingList"></div>
+        </div>
+    </div>
+    <div class="transfer-tab-content" id="uploadCompletedTab">
+        <div class="transfer-toolbar">
+            <button class="btn btn-primary" style="background:var(--danger)" onclick="clearCompletedUploads()">清空全部记录</button>
+        </div>
+        <div class="card" style="padding:0">
+            <div class="file-list-header">
+                <span class="col-name">名称</span>
+                <span class="col-size">大小</span>
+                <span class="col-time">完成时间</span>
+                <span class="col-actions">操作</span>
+            </div>
+            <div id="uploadCompletedList"></div>
+        </div>
+    </div>
+</div>
+
+<div class="transfer-section" id="downloadSection">
+    <div class="category-bar" id="downloadCategoryBar">
+        <button class="category-tab active" data-tab="downloading">下载中<span class="count-badge" id="downloadDownloadingCount">0</span></button>
+        <button class="category-tab" data-tab="downloadCompleted">已完成<span class="count-badge" id="downloadCompletedCount">0</span></button>
+    </div>
+    <div class="transfer-tab-content active" id="downloadDownloadingTab">
+        <div class="transfer-toolbar">
+            <button class="btn btn-primary" onclick="pauseAllDownloads()">全部暂停</button>
+            <button class="btn btn-primary" onclick="resumeAllDownloads()">全部开始</button>
+            <button class="btn btn-primary" style="background:var(--danger)" onclick="deleteAllDownloads()">全部删除</button>
+        </div>
+        <div class="card" style="padding:0">
+            <div class="file-list-header">
+                <span class="col-name">名称</span>
+                <span class="col-size">大小</span>
+                <span style="flex:0 0 auto;min-width:180px">状态</span>
+                <span class="col-actions">操作</span>
+            </div>
+            <div id="downloadDownloadingList"></div>
+        </div>
+    </div>
+    <div class="transfer-tab-content" id="downloadCompletedTab">
+        <div class="transfer-toolbar">
+            <button class="btn btn-primary" style="background:var(--danger)" onclick="clearCompletedDownloads()">清空全部记录</button>
+        
+        </div>
+        <div class="card" style="padding:0">
+            <div class="file-list-header">
+                <span class="col-name">名称</span>
+                <span class="col-size">大小</span>
+                <span class="col-time">完成时间</span>
+                <span class="col-actions">操作</span>
+            </div>
+            <div id="downloadCompletedList"></div>
+        </div>
+    </div>
+</div>
+{{end}}
+{{define "scripts"}}
+<script src="/static/js/transfer.js"></script>
+{{end}}

@@ -147,25 +147,83 @@ function batchDeleteSelected() {
 }
 
 var MAX_CHUNK_RETRIES = 3;
+var TRANSFER_TASKS_KEY = 'transfer_tasks';
+
+function getTransferTasks() {
+    try { return JSON.parse(localStorage.getItem(TRANSFER_TASKS_KEY)) || []; }
+    catch(e) { return []; }
+}
+
+function saveTransferTasks(tasks) {
+    localStorage.setItem(TRANSFER_TASKS_KEY, JSON.stringify(tasks));
+}
+
+function createTransferTask(task) {
+    var tasks = getTransferTasks();
+    tasks.push(task);
+    saveTransferTasks(tasks);
+}
+
+function updateTransferTask(id, updates) {
+    var tasks = getTransferTasks();
+    for (var i = 0; i < tasks.length; i++) {
+        if (tasks[i].id === id) {
+            for (var k in updates) {
+                if (updates.hasOwnProperty(k)) tasks[i][k] = updates[k];
+            }
+            break;
+        }
+    }
+    saveTransferTasks(tasks);
+}
 
 function uploadFileChunked(file) {
     var chunkSize = 10 * 1024 * 1024;
     var totalChunks = Math.ceil(file.size / chunkSize);
-    var targetDir = typeof currentDir !== 'undefined' ? currentDir : null;
     var uploadID = null;
+    var taskId = null;
+    var paused = false;
+    var index = 0;
     var progressDiv = createProgressItem(file.name);
 
     apiFetch('/api/files/upload/init', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCSRFToken() },
-        body: JSON.stringify({ name: file.name, parent_id: currentDir, total_size: file.size })
+        body: JSON.stringify({ name: file.name, parent_id: typeof currentDir !== 'undefined' ? currentDir : null, total_size: file.size })
     }).then(function(r) {
         if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || '初始化上传失败'); });
         return r.json();
     }).then(function(data) {
         uploadID = data.upload_id;
-        var index = 0;
+        taskId = 'upload_' + uploadID;
+        if (data.chunk_size && data.chunk_size > 0) {
+            chunkSize = data.chunk_size;
+            totalChunks = Math.ceil(file.size / chunkSize);
+        }
+        createTransferTask({
+            id: taskId,
+            type: 'upload',
+            status: 'active',
+            name: file.name,
+            size: file.size,
+            uploadId: uploadID,
+            fileId: null,
+            parentId: typeof currentDir !== 'undefined' ? currentDir : null,
+            progress: 0,
+            speed: 0,
+            completedAt: null,
+            error: null
+        });
+        if (!window._uploadControllers) window._uploadControllers = {};
+        window._uploadControllers[taskId] = {
+            pause: function() { paused = true; },
+            resume: function() { paused = false; uploadNext(); },
+            cancel: function() { paused = true; index = totalChunks + 1; }
+        };
+        uploadNext();
+
         function uploadNext() {
+            if (paused) return;
             if (index >= totalChunks) {
                 completeUpload();
                 return;
@@ -177,6 +235,7 @@ function uploadFileChunked(file) {
         }
 
         function uploadChunkWithRetry(uploadID, chunkIndex, chunk, retryCount) {
+            if (paused) return;
             var form = new FormData();
             form.append('chunk', chunk);
             form.append('upload_id', uploadID);
@@ -186,23 +245,26 @@ function uploadFileChunked(file) {
                 headers: { 'X-CSRF-Token': getCSRFToken() },
                 body: form
             }).then(function(r) {
-                if (!r.ok) throw new Error('分片上传失败');
+                if (!r.ok) return r.text().then(function(t) { throw new Error(t || '分片上传失败'); });
                 index++;
                 var pct = Math.round((index / totalChunks) * 100);
-                updateProgress(progressDiv, pct);
+                try { updateProgress(progressDiv, pct); } catch(e) {}
+                try { if (taskId) updateTransferTask(taskId, { progress: pct }); } catch(e) {}
                 uploadNext();
             }).catch(function(e) {
+                if (paused) return;
                 if (retryCount < MAX_CHUNK_RETRIES) {
+                    var d = 1000 * (retryCount + 1);
                     setTimeout(function() {
                         uploadChunkWithRetry(uploadID, chunkIndex, chunk, retryCount + 1);
-                    }, 1000 * (retryCount + 1));
+                    }, d);
                 } else {
-                    removeProgress(progressDiv, e.message);
+                    try { removeProgress(progressDiv, e.message || '分片上传失败'); } catch(e2) {}
+                    try { if (taskId) updateTransferTask(taskId, { status: 'error', error: e.message || '分片上传失败' }); } catch(e3) {}
+                    if (taskId && window._uploadControllers) delete window._uploadControllers[taskId];
                 }
             });
         }
-
-        uploadNext();
     }).catch(function(e) {
         removeProgress(progressDiv, e.message);
     });
@@ -214,14 +276,29 @@ function uploadFileChunked(file) {
             body: JSON.stringify({ upload_id: uploadID })
         }).then(function(r) {
             if (r.ok) {
-                removeProgress(progressDiv, null);
-                if (typeof refreshFiles === 'function') refreshFiles();
-                showToast('上传完成：' + file.name);
+                return r.json().then(function(data) {
+                    removeProgress(progressDiv, null);
+                    if (taskId) {
+                        updateTransferTask(taskId, {
+                            status: 'completed',
+                            progress: 100,
+                            fileId: data.id,
+                            completedAt: new Date().toISOString()
+                        });
+                    }
+                    if (taskId && window._uploadControllers) delete window._uploadControllers[taskId];
+                    if (typeof refreshFiles === 'function') refreshFiles();
+                    showToast('上传完成：' + file.name);
+                });
             } else {
                 removeProgress(progressDiv, '完成上传失败');
+                if (taskId) updateTransferTask(taskId, { status: 'error', error: '完成上传失败' });
+                if (taskId && window._uploadControllers) delete window._uploadControllers[taskId];
             }
         }).catch(function() {
             removeProgress(progressDiv, '完成上传失败');
+            if (taskId) updateTransferTask(taskId, { status: 'error', error: '完成上传失败' });
+            if (taskId && window._uploadControllers) delete window._uploadControllers[taskId];
         });
     }
 }

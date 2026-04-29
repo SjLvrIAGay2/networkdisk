@@ -91,6 +91,18 @@ func (svc *FileService) ListDirectory(parentID *int64, userID int64) ([]*model.F
 	return svc.store.FilesByParentID(parentID, userID)
 }
 
+func (svc *FileService) GetBreadcrumb(dirID int64) ([]*model.BreadcrumbItem, error) {
+	ancestors, err := svc.store.FileAncestors(dirID)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]*model.BreadcrumbItem, 0, len(ancestors))
+	for _, a := range ancestors {
+		items = append(items, &model.BreadcrumbItem{ID: a.ID, Name: a.Name})
+	}
+	return items, nil
+}
+
 type UploadResult struct {
 	File      *model.File
 	Duplicate bool
@@ -1526,6 +1538,18 @@ func (svc *FileService) cleanupUploadSession(uploadID string) {
 	os.RemoveAll(svc.chunkDir(uploadID))
 }
 
+func (svc *FileService) CancelUpload(uploadID string, userID int64) error {
+	session, err := svc.loadUploadSession(uploadID)
+	if err != nil {
+		return err
+	}
+	if session.UserID != userID {
+		return fmt.Errorf("上传会话不属于当前用户")
+	}
+	svc.cleanupUploadSession(uploadID)
+	return nil
+}
+
 func (svc *FileService) RecordAudit(userID int64, action, targetType string, targetID int64, detail, ip string) {
 	log := &model.AuditLog{
 		UserID:     userID,
@@ -1726,7 +1750,7 @@ func (svc *FileService) ListFilesByType(userID int64, filterType string) ([]*mod
 	}
 }
 
-func (svc *FileService) SharedFiles(userID int64) ([]*model.File, error) {
+func (svc *FileService) SharedFiles(userID int64) ([]store.FileWithShare, error) {
 	return svc.store.FilesWithActiveShares(userID)
 }
 

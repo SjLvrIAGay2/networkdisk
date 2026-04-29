@@ -15,11 +15,14 @@
             --primary: #2563eb;
             --primary-hover: #1d4ed8;
             --danger: #dc2626;
-            --sidebar-bg: #1e293b;
-            --sidebar-text: #e2e8f0;
+            --sidebar-bg: #ffffff;
+            --sidebar-text: #666666;
+            --sidebar-hover: rgba(0,0,0,0.05);
+            --sidebar-active-bg: var(--primary);
+            --sidebar-active-text: #ffffff;
             --navbar-bg: #ffffff;
             --navbar-shadow: 0 1px 3px rgba(0,0,0,0.1);
-            --sidebar-width: 80px;
+            --sidebar-width: 60px;
         }
         [data-theme="dark"] {
             --bg: #0f172a;
@@ -32,6 +35,11 @@
             --danger: #ef4444;
             --navbar-bg: #1e293b;
             --navbar-shadow: 0 1px 3px rgba(0,0,0,0.3);
+            --sidebar-bg: #0f172a;
+            --sidebar-text: #e2e8f0;
+            --sidebar-hover: rgba(255,255,255,0.08);
+            --sidebar-active-bg: var(--primary);
+            --sidebar-active-text: #ffffff;
         }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -98,7 +106,7 @@
             text-align: center;
         }
         .sidebar a:hover {
-            background: rgba(255,255,255,0.08);
+            background: var(--sidebar-hover);
         }
         .main-content {
             margin-left: var(--sidebar-width);
@@ -181,9 +189,11 @@
     </nav>
     <aside class="sidebar">
         <a href="/">首页</a>
+        <a href="/transfer">传输</a>
         {{block "sidebar" .}}{{end}}
     </aside>
-    <main class="main-content">
+    {{block "sub_sidebar" .}}{{end}}
+    <main class="main-content" id="mainContent">
         {{block "content" .}}{{end}}
     </main>
     <script>
@@ -255,6 +265,7 @@
                     }
                     return refreshPromise.then(function(data) {
                         headers['Authorization'] = 'Bearer ' + data.access_token;
+                        headers['X-CSRF-Token'] = getCSRFToken();
                         options.headers = headers;
                         refreshRetryCount = 0;
                         return fetch(url, options);

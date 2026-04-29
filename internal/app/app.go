@@ -39,7 +39,7 @@ func Run(configPath string) error {
 	if cfg.Auth.JWTSecret == "" {
 		return fmt.Errorf("auth.jwt_secret must be set")
 	}
-	if len(cfg.Auth.JWTSecret) < 32 {
+if len(cfg.Auth.JWTSecret) < 32 {
 		return fmt.Errorf("auth.jwt_secret must be at least 32 characters")
 	}
 	knownWeak := []string{"change-me-to-a-random-secret", "dev-secret-do-not-use-in-production"}
@@ -144,6 +144,7 @@ func Run(configPath string) error {
 		Handler:      mux,
 		ReadTimeout:  cfg.ReadTimeoutDuration(),
 		WriteTimeout: cfg.WriteTimeoutDuration(),
+		IdleTimeout:  cfg.IdleTimeoutDuration(),
 	}
 
 	reloadDone := config.StartReloadWatcher(configPath, func(newCfg *config.Config) {
