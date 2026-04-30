@@ -20,7 +20,7 @@ conn_max_lifetime = "5m"
 
 [storage]
 root = "/Volumes/.storage"
-max_file_size = 524288000
+max_file_size = 4194304000
 thumbnail_max_size = 20971520
 thumbnail_quality = 80
 chunk_size = 10485760

@@ -15,16 +15,16 @@ import (
 )
 
 type ServerConfig struct {
-	Host             string   `toml:"host"`
-	Port             int      `toml:"port"`
-	ReadTimeout      string   `toml:"read_timeout"`
-	WriteTimeout     string   `toml:"write_timeout"`
-	IdleTimeout      string   `toml:"idle_timeout"`
-	ShutdownTimeout  string   `toml:"shutdown_timeout"`
-	RateLimit        int      `toml:"rate_limit"`
-	RateLimitWindow  string   `toml:"rate_limit_window"`
-	AllowedOrigins   []string `toml:"allowed_origins"`
-	TrustedProxy     string   `toml:"trusted_proxy"`
+	Host            string   `toml:"host"`
+	Port            int      `toml:"port"`
+	ReadTimeout     string   `toml:"read_timeout"`
+	WriteTimeout    string   `toml:"write_timeout"`
+	IdleTimeout     string   `toml:"idle_timeout"`
+	ShutdownTimeout string   `toml:"shutdown_timeout"`
+	RateLimit       int      `toml:"rate_limit"`
+	RateLimitWindow string   `toml:"rate_limit_window"`
+	AllowedOrigins  []string `toml:"allowed_origins"`
+	TrustedProxy    string   `toml:"trusted_proxy"`
 }
 
 type DatabaseConfig struct {
@@ -39,15 +39,15 @@ type DatabaseConfig struct {
 }
 
 type StorageConfig struct {
-	Root               string `toml:"root"`
-	MaxFileSize        int64  `toml:"max_file_size"`
-	ThumbnailMaxSize   int64  `toml:"thumbnail_max_size"`
-	ThumbnailQuality   int    `toml:"thumbnail_quality"`
-	ChunkSize          int64  `toml:"chunk_size"`
-	ChunkCleanTimeout  string `toml:"chunk_clean_timeout"`
-	AutoCleanRecycleDays int  `toml:"auto_clean_recycle_days"`
-	FfmpegPath         string `toml:"ffmpeg_path"`
-	TempLinkTTL        string `toml:"temp_link_ttl"`
+	Root                 string `toml:"root"`
+	MaxFileSize          int64  `toml:"max_file_size"`
+	ThumbnailMaxSize     int64  `toml:"thumbnail_max_size"`
+	ThumbnailQuality     int    `toml:"thumbnail_quality"`
+	ChunkSize            int64  `toml:"chunk_size"`
+	ChunkCleanTimeout    string `toml:"chunk_clean_timeout"`
+	AutoCleanRecycleDays int    `toml:"auto_clean_recycle_days"`
+	FfmpegPath           string `toml:"ffmpeg_path"`
+	TempLinkTTL          string `toml:"temp_link_ttl"`
 }
 
 type UploadConfig struct {
@@ -73,10 +73,10 @@ type LogConfig struct {
 }
 
 type ShareConfig struct {
-	DefaultExpire           string `toml:"default_expire"`
-	MaxPasswordAttempts     int    `toml:"max_password_attempts"`
-	BcryptCost              int    `toml:"bcrypt_cost"`
-	PasswordRateLimitReset  string `toml:"password_rate_limit_reset"`
+	DefaultExpire          string `toml:"default_expire"`
+	MaxPasswordAttempts    int    `toml:"max_password_attempts"`
+	BcryptCost             int    `toml:"bcrypt_cost"`
+	PasswordRateLimitReset string `toml:"password_rate_limit_reset"`
 }
 
 type Config struct {
@@ -95,98 +95,98 @@ var (
 )
 
 var defaults = map[string]interface{}{
-	"server.host":               "0.0.0.0",
-	"server.port":               8080,
-	"server.read_timeout":       "300s",
-	"server.write_timeout":      "300s",
-		"server.idle_timeout":       "120s",
-	"server.shutdown_timeout":   "10s",
-	"server.rate_limit":         60,
-	"server.rate_limit_window":  "1m",
-	"database.host":           "127.0.0.1",
-	"database.port":           3306,
-	"database.max_open_conns": 25,
-	"database.max_idle_conns": 5,
-	"database.conn_max_lifetime": "5m",
-	"storage.root":           "./data",
-	"storage.max_file_size":    int64(100 << 20),
-	"storage.thumbnail_max_size": int64(50 << 20),
-	"storage.thumbnail_quality": 80,
-	"storage.chunk_size":          int64(10 << 20),
-	"storage.chunk_clean_timeout": "24h",
+	"server.host":                     "0.0.0.0",
+	"server.port":                     24003,
+	"server.read_timeout":             "300s",
+	"server.write_timeout":            "300s",
+	"server.idle_timeout":             "120s",
+	"server.shutdown_timeout":         "10s",
+	"server.rate_limit":               60,
+	"server.rate_limit_window":        "1m",
+	"database.host":                   "127.0.0.1",
+	"database.port":                   3306,
+	"database.max_open_conns":         25,
+	"database.max_idle_conns":         5,
+	"database.conn_max_lifetime":      "5m",
+	"storage.root":                    "./data",
+	"storage.max_file_size":           int64(100 << 20),
+	"storage.thumbnail_max_size":      int64(50 << 20),
+	"storage.thumbnail_quality":       80,
+	"storage.chunk_size":              int64(10 << 20),
+	"storage.chunk_clean_timeout":     "24h",
 	"storage.auto_clean_recycle_days": 30,
-	"storage.ffmpeg_path":         "",
-	"upload.detect_mime":       true,
-	"upload.on_name_conflict":  "rename",
-	"auth.jwt_expire":          "15m",
-	"auth.refresh_expire":      "7d",
-	"auth.bcrypt_cost":         12,
-	"auth.totp_issuer":        "NetworkDisk",
-	"log.level":                "info",
-	"log.format":               "text",
-	"log.audit_retention_days":  365,
-	"share.default_expire":      "",
-	"share.max_password_attempts": 5,
-	"share.bcrypt_cost":            6,
+	"storage.ffmpeg_path":             "",
+	"upload.detect_mime":              true,
+	"upload.on_name_conflict":         "rename",
+	"auth.jwt_expire":                 "15m",
+	"auth.refresh_expire":             "7d",
+	"auth.bcrypt_cost":                12,
+	"auth.totp_issuer":                "NetworkDisk",
+	"log.level":                       "info",
+	"log.format":                      "text",
+	"log.audit_retention_days":        365,
+	"share.default_expire":            "",
+	"share.max_password_attempts":     5,
+	"share.bcrypt_cost":               6,
 	"share.password_rate_limit_reset": "15m",
-	"storage.temp_link_ttl":          "1h",
+	"storage.temp_link_ttl":           "1h",
 }
 
 var reloadWhitelist = map[string]bool{
-	"auth.jwt_secret":             false,
-	"database.host":               false,
-	"database.port":               false,
-	"database.user":               false,
-	"database.password":           false,
-	"database.database":           false,
-	"database.max_open_conns":     false,
-	"database.max_idle_conns":     false,
+	"auth.jwt_secret":            false,
+	"database.host":              false,
+	"database.port":              false,
+	"database.user":              false,
+	"database.password":          false,
+	"database.database":          false,
+	"database.max_open_conns":    false,
+	"database.max_idle_conns":    false,
 	"database.conn_max_lifetime": false,
 }
 
 var envMapping = map[string]string{
-	"server.host":                  "NETWORKDISK_SERVER_HOST",
-	"server.port":                  "NETWORKDISK_SERVER_PORT",
-	"server.read_timeout":          "NETWORKDISK_SERVER_READ_TIMEOUT",
-	"server.write_timeout":         "NETWORKDISK_SERVER_WRITE_TIMEOUT",
-		"server.idle_timeout":          "NETWORKDISK_SERVER_IDLE_TIMEOUT",
-	"server.shutdown_timeout":      "NETWORKDISK_SERVER_SHUTDOWN_TIMEOUT",
-	"server.rate_limit":            "NETWORKDISK_SERVER_RATE_LIMIT",
-	"server.rate_limit_window":     "NETWORKDISK_SERVER_RATE_LIMIT_WINDOW",
-	"database.host":                "NETWORKDISK_DATABASE_HOST",
-	"database.port":                "NETWORKDISK_DATABASE_PORT",
-	"database.user":                "NETWORKDISK_DATABASE_USER",
-	"database.password":            "NETWORKDISK_DATABASE_PASSWORD",
-	"database.database":            "NETWORKDISK_DATABASE_DATABASE",
-	"database.max_open_conns":      "NETWORKDISK_DATABASE_MAX_OPEN_CONNS",
-	"database.max_idle_conns":      "NETWORKDISK_DATABASE_MAX_IDLE_CONNS",
-	"database.conn_max_lifetime":   "NETWORKDISK_DATABASE_CONN_MAX_LIFETIME",
-	"storage.root":                 "NETWORKDISK_STORAGE_ROOT",
-	"storage.max_file_size":        "NETWORKDISK_STORAGE_MAX_FILE_SIZE",
-	"storage.thumbnail_max_size":       "NETWORKDISK_STORAGE_THUMBNAIL_MAX_SIZE",
-	"storage.thumbnail_quality":        "NETWORKDISK_STORAGE_THUMBNAIL_QUALITY",
-	"storage.chunk_size":               "NETWORKDISK_STORAGE_CHUNK_SIZE",
-	"storage.chunk_clean_timeout":      "NETWORKDISK_STORAGE_CHUNK_CLEAN_TIMEOUT",
-	"storage.auto_clean_recycle_days":  "NETWORKDISK_STORAGE_AUTO_CLEAN_RECYCLE_DAYS",
+	"server.host":                     "NETWORKDISK_SERVER_HOST",
+	"server.port":                     "NETWORKDISK_SERVER_PORT",
+	"server.read_timeout":             "NETWORKDISK_SERVER_READ_TIMEOUT",
+	"server.write_timeout":            "NETWORKDISK_SERVER_WRITE_TIMEOUT",
+	"server.idle_timeout":             "NETWORKDISK_SERVER_IDLE_TIMEOUT",
+	"server.shutdown_timeout":         "NETWORKDISK_SERVER_SHUTDOWN_TIMEOUT",
+	"server.rate_limit":               "NETWORKDISK_SERVER_RATE_LIMIT",
+	"server.rate_limit_window":        "NETWORKDISK_SERVER_RATE_LIMIT_WINDOW",
+	"database.host":                   "NETWORKDISK_DATABASE_HOST",
+	"database.port":                   "NETWORKDISK_DATABASE_PORT",
+	"database.user":                   "NETWORKDISK_DATABASE_USER",
+	"database.password":               "NETWORKDISK_DATABASE_PASSWORD",
+	"database.database":               "NETWORKDISK_DATABASE_DATABASE",
+	"database.max_open_conns":         "NETWORKDISK_DATABASE_MAX_OPEN_CONNS",
+	"database.max_idle_conns":         "NETWORKDISK_DATABASE_MAX_IDLE_CONNS",
+	"database.conn_max_lifetime":      "NETWORKDISK_DATABASE_CONN_MAX_LIFETIME",
+	"storage.root":                    "NETWORKDISK_STORAGE_ROOT",
+	"storage.max_file_size":           "NETWORKDISK_STORAGE_MAX_FILE_SIZE",
+	"storage.thumbnail_max_size":      "NETWORKDISK_STORAGE_THUMBNAIL_MAX_SIZE",
+	"storage.thumbnail_quality":       "NETWORKDISK_STORAGE_THUMBNAIL_QUALITY",
+	"storage.chunk_size":              "NETWORKDISK_STORAGE_CHUNK_SIZE",
+	"storage.chunk_clean_timeout":     "NETWORKDISK_STORAGE_CHUNK_CLEAN_TIMEOUT",
+	"storage.auto_clean_recycle_days": "NETWORKDISK_STORAGE_AUTO_CLEAN_RECYCLE_DAYS",
 	"storage.ffmpeg_path":             "NETWORKDISK_STORAGE_FFMPEG_PATH",
-	"upload.allowed_extensions":    "NETWORKDISK_UPLOAD_ALLOWED_EXTENSIONS",
-	"upload.blocked_extensions":    "NETWORKDISK_UPLOAD_BLOCKED_EXTENSIONS",
-	"upload.detect_mime":           "NETWORKDISK_UPLOAD_DETECT_MIME",
-	"upload.on_name_conflict":      "NETWORKDISK_UPLOAD_ON_NAME_CONFLICT",
-	"auth.jwt_secret":              "NETWORKDISK_AUTH_JWT_SECRET",
-	"auth.jwt_expire":              "NETWORKDISK_AUTH_JWT_EXPIRE",
-	"auth.refresh_expire":          "NETWORKDISK_AUTH_REFRESH_EXPIRE",
-	"auth.bcrypt_cost":             "NETWORKDISK_AUTH_BCRYPT_COST",
-	"auth.totp_issuer":            "NETWORKDISK_AUTH_TOTP_ISSUER",
-	"log.level":                    "NETWORKDISK_LOG_LEVEL",
-	"log.format":                   "NETWORKDISK_LOG_FORMAT",
-	"log.file":                     "NETWORKDISK_LOG_FILE",
-	"log.audit_retention_days":      "NETWORKDISK_LOG_AUDIT_RETENTION_DAYS",
-	"share.default_expire":          "NETWORKDISK_SHARE_DEFAULT_EXPIRE",
-	"share.max_password_attempts":   "NETWORKDISK_SHARE_MAX_PASSWORD_ATTEMPTS",
-	"share.bcrypt_cost":              "NETWORKDISK_SHARE_BCRYPT_COST",
+	"upload.allowed_extensions":       "NETWORKDISK_UPLOAD_ALLOWED_EXTENSIONS",
+	"upload.blocked_extensions":       "NETWORKDISK_UPLOAD_BLOCKED_EXTENSIONS",
+	"upload.detect_mime":              "NETWORKDISK_UPLOAD_DETECT_MIME",
+	"upload.on_name_conflict":         "NETWORKDISK_UPLOAD_ON_NAME_CONFLICT",
+	"auth.jwt_secret":                 "NETWORKDISK_AUTH_JWT_SECRET",
+	"auth.jwt_expire":                 "NETWORKDISK_AUTH_JWT_EXPIRE",
+	"auth.refresh_expire":             "NETWORKDISK_AUTH_REFRESH_EXPIRE",
+	"auth.bcrypt_cost":                "NETWORKDISK_AUTH_BCRYPT_COST",
+	"auth.totp_issuer":                "NETWORKDISK_AUTH_TOTP_ISSUER",
+	"log.level":                       "NETWORKDISK_LOG_LEVEL",
+	"log.format":                      "NETWORKDISK_LOG_FORMAT",
+	"log.file":                        "NETWORKDISK_LOG_FILE",
+	"log.audit_retention_days":        "NETWORKDISK_LOG_AUDIT_RETENTION_DAYS",
+	"share.default_expire":            "NETWORKDISK_SHARE_DEFAULT_EXPIRE",
+	"share.max_password_attempts":     "NETWORKDISK_SHARE_MAX_PASSWORD_ATTEMPTS",
+	"share.bcrypt_cost":               "NETWORKDISK_SHARE_BCRYPT_COST",
 	"share.password_rate_limit_reset": "NETWORKDISK_SHARE_PASSWORD_RATE_LIMIT_RESET",
-	"storage.temp_link_ttl":          "NETWORKDISK_STORAGE_TEMP_LINK_TTL",
+	"storage.temp_link_ttl":           "NETWORKDISK_STORAGE_TEMP_LINK_TTL",
 }
 
 func Load(path string) (*Config, error) {
@@ -287,32 +287,32 @@ func setNested(v reflect.Value, parts []string, value string) {
 
 func fieldName(tomlKey string) string {
 	mapping := map[string]string{
-		"read_timeout":       "ReadTimeout",
-		"write_timeout":      "WriteTimeout",
-		"idle_timeout":       "IdleTimeout",
-		"shutdown_timeout":   "ShutdownTimeout",
-		"max_open_conns":     "MaxOpenConns",
-		"max_idle_conns":     "MaxIdleConns",
-		"conn_max_lifetime":  "ConnMaxLifetime",
-		"jwt_secret":         "JWTSecret",
-		"jwt_expire":         "JWTExpire",
-		"refresh_expire":     "RefreshExpire",
-		"bcrypt_cost":        "BcryptCost",
-	"totp_issuer":        "TOTPIssuer",
-		"max_file_size":      "MaxFileSize",
-		"thumbnail_max_size":       "ThumbnailMaxSize",
-		"thumbnail_quality":        "ThumbnailQuality",
-		"chunk_size":               "ChunkSize",
-		"chunk_clean_timeout":      "ChunkCleanTimeout",
-		"auto_clean_recycle_days":  "AutoCleanRecycleDays",
+		"read_timeout":            "ReadTimeout",
+		"write_timeout":           "WriteTimeout",
+		"idle_timeout":            "IdleTimeout",
+		"shutdown_timeout":        "ShutdownTimeout",
+		"max_open_conns":          "MaxOpenConns",
+		"max_idle_conns":          "MaxIdleConns",
+		"conn_max_lifetime":       "ConnMaxLifetime",
+		"jwt_secret":              "JWTSecret",
+		"jwt_expire":              "JWTExpire",
+		"refresh_expire":          "RefreshExpire",
+		"bcrypt_cost":             "BcryptCost",
+		"totp_issuer":             "TOTPIssuer",
+		"max_file_size":           "MaxFileSize",
+		"thumbnail_max_size":      "ThumbnailMaxSize",
+		"thumbnail_quality":       "ThumbnailQuality",
+		"chunk_size":              "ChunkSize",
+		"chunk_clean_timeout":     "ChunkCleanTimeout",
+		"auto_clean_recycle_days": "AutoCleanRecycleDays",
 		"temp_link_ttl":           "TempLinkTTL",
-		"audit_retention_days":     "AuditRetentionDays",
-		"default_expire":           "DefaultExpire",
-		"max_password_attempts":    "MaxPasswordAttempts",
-		"allowed_extensions": "AllowedExtensions",
-		"blocked_extensions": "BlockedExtensions",
-		"detect_mime":        "DetectMime",
-		"on_name_conflict":   "OnNameConflict",
+		"audit_retention_days":    "AuditRetentionDays",
+		"default_expire":          "DefaultExpire",
+		"max_password_attempts":   "MaxPasswordAttempts",
+		"allowed_extensions":      "AllowedExtensions",
+		"blocked_extensions":      "BlockedExtensions",
+		"detect_mime":             "DetectMime",
+		"on_name_conflict":        "OnNameConflict",
 	}
 	if mapped, ok := mapping[tomlKey]; ok {
 		return mapped

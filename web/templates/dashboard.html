@@ -1,13 +1,4 @@
-{{template "base.html" .}}
 {{define "title"}}仪表盘 - NetworkDisk{{end}}
-{{define "nav-right"}}
-<span id="navUsername" style="font-size:14px;color:var(--text-secondary);"></span>
-<button onclick="handleLogout()" style="font-size:14px;color:var(--text);text-decoration:none;background:none;border:none;cursor:pointer;padding:6px 12px;border-radius:6px;">退出</button>
-<button id="themeToggle" class="theme-toggle" onclick="toggleTheme()">🌙</button>
-{{end}}
-{{define "sidebar"}}
-<a href="/dashboard" style="font-weight:600;">仪表盘</a>
-{{end}}
 {{define "content"}}
 <div>
     <h2 style="margin-bottom:20px;">仪表盘</h2>
@@ -51,20 +42,6 @@
 {{define "scripts"}}
 <script>
 (function() {
-    var token = localStorage.getItem('access_token');
-    if (!token) { window.location.replace('/login'); return; }
-    apiFetch('/api/auth/me', {}).then(function(r) {
-        if (!r.ok) { localStorage.removeItem('access_token'); window.location.replace('/login'); return; }
-        return r.json();
-    }).then(function(data) {
-        if (data && data.username) {
-            var el = document.getElementById('navUsername');
-            if (el) el.textContent = data.username;
-        }
-    }).catch(function() {
-        localStorage.removeItem('access_token');
-        window.location.replace('/login');
-    });
     loadDashboard();
 })();
 

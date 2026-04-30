@@ -1,8 +1,11 @@
 (function() {
+    if (!document.getElementById('uploadSection')) return;
+
     var currentSection = 'upload';
     var currentUploadTab = 'uploading';
     var currentDownloadTab = 'downloading';
-    var activeDownloads = {};
+    window._activeDownloads = window._activeDownloads || {};
+    var activeDownloads = window._activeDownloads;
 
     function removeTransferTask(id) {
         var tasks = getTransferTasks();
@@ -299,84 +302,9 @@
         performDownload(taskId, fileId, fileName, fileSize);
     };
 
-    function performDownload(taskId, fileId, fileName, fileSize) {
-        var aborted = false;
-        var chunks = [];
-        var lastTs = Date.now();
-        var lastBytes = 0;
-        var receivedBytes = 0;
-
-        function updateSpeed() {
-            var now = Date.now();
-            var elapsed = (now - lastTs) / 1000;
-            if (elapsed >= 1) {
-                var speed = (receivedBytes - lastBytes) / elapsed;
-                lastTs = now;
-                lastBytes = receivedBytes;
-                updateTransferTask(taskId, { speed: speed > 0 ? Math.round(speed) : 0 });
-            }
-        }
-
-        activeDownloads[taskId] = {
-            abort: function() { aborted = true; }
-        };
-
-        apiFetch('/api/files/download/' + fileId, {}).then(function(r) {
-            if (!r.ok) throw new Error('下载失败: ' + r.status);
-            var contentLength = parseInt(r.headers.get('Content-Length') || '0', 10);
-            var reader = r.body.getReader();
-            var totalSize = contentLength || fileSize || 1;
-
-            function read() {
-                if (aborted) {
-                    reader.cancel();
-                    return;
-                }
-                reader.read().then(function(result) {
-                    if (result.done) {
-                        var blob = new Blob(chunks);
-                        var url = window.URL.createObjectURL(blob);
-                        var a = document.createElement('a');
-                        a.href = url;
-                        a.download = fileName;
-                        document.body.appendChild(a);
-                        a.click();
-                        document.body.removeChild(a);
-                        window.URL.revokeObjectURL(url);
-                        updateTransferTask(taskId, {
-                            status: 'completed',
-                            progress: 100,
-                            receivedBytes: receivedBytes,
-                            completedAt: new Date().toISOString()
-                        });
-                        delete activeDownloads[taskId];
-                        renderAll();
-                        if (typeof showToast === 'function') showToast('下载完成：' + fileName);
-                        return;
-                    }
-                    chunks.push(result.value);
-                    receivedBytes += result.value.byteLength;
-                    var pct = Math.round((receivedBytes / totalSize) * 100);
-                    if (pct > 100) pct = 99;
-                    updateTransferTask(taskId, { progress: pct, receivedBytes: receivedBytes });
-                    updateSpeed();
-                    if (renderAll) renderAll();
-                    read();
-                }).catch(function(e) {
-                    if (!aborted) {
-                        updateTransferTask(taskId, { status: 'error', error: e.message || '网络错误' });
-                        delete activeDownloads[taskId];
-                        renderAll();
-                    }
-                });
-            }
-            read();
-        }).catch(function(e) {
-            if (!aborted) {
-                updateTransferTask(taskId, { status: 'error', error: e.message || '网络错误' });
-                delete activeDownloads[taskId];
-                renderAll();
-            }
+    function performDownload(taskId, fileId, fileName, fileSize, partialBlob, initialReceivedBytes) {
+        _performDownload(taskId, fileId, fileName, fileSize, partialBlob || null, initialReceivedBytes || 0, function() {
+            renderAll();
         });
     }
 
@@ -385,6 +313,12 @@
         var ctrl = activeDownloads[taskId];
         if (ctrl) {
             ctrl.abort();
+            if (ctrl.chunks && ctrl.chunks.length > 0) {
+                var blob = new Blob(ctrl.chunks.slice());
+                if (typeof _storeUploadFile === 'function') {
+                    _storeUploadFile(taskId, blob).catch(function() {});
+                }
+            }
             delete activeDownloads[taskId];
         }
         renderAll();
@@ -397,9 +331,23 @@
             if (tasks[i].id === taskId) { task = tasks[i]; break; }
         }
         if (!task) return;
-        updateTransferTask(taskId, { status: 'active', progress: 0, receivedBytes: 0, speed: 0 });
-        renderAll();
-        performDownload(taskId, task.fileId, task.name, task.size);
+        if (typeof _getUploadFile === 'function') {
+            _getUploadFile(taskId).then(function(partialBlob) {
+                var initialBytes = partialBlob ? partialBlob.size : 0;
+                var pct = task.size > 0 ? Math.round((initialBytes / task.size) * 100) : 0;
+                updateTransferTask(taskId, { status: 'active', progress: pct, receivedBytes: initialBytes, speed: 0 });
+                renderAll();
+                performDownload(taskId, task.fileId, task.name, task.size, partialBlob || null, initialBytes);
+            }).catch(function() {
+                updateTransferTask(taskId, { status: 'active', progress: 0, receivedBytes: 0, speed: 0 });
+                renderAll();
+                performDownload(taskId, task.fileId, task.name, task.size, null, 0);
+            });
+        } else {
+            updateTransferTask(taskId, { status: 'active', progress: 0, receivedBytes: 0, speed: 0 });
+            renderAll();
+            performDownload(taskId, task.fileId, task.name, task.size, null, 0);
+        }
     };
 
     window.pauseUpload = function(taskId) {
@@ -417,9 +365,21 @@
             if (tasks[i].id === taskId) { task = tasks[i]; break; }
         }
         if (!task) return;
-        updateTransferTask(taskId, { status: 'active' });
+        if (task.status === 'active') {
+            if (window._uploadControllers && window._uploadControllers[taskId]) {
+                window._uploadControllers[taskId].resume();
+            }
+            renderAll();
+            return;
+        }
         if (window._uploadControllers && window._uploadControllers[taskId]) {
+            updateTransferTask(taskId, { status: 'active' });
             window._uploadControllers[taskId].resume();
+            renderAll();
+            return;
+        }
+        if (typeof resumeChunkedUpload === 'function') {
+            resumeChunkedUpload(taskId);
         }
         renderAll();
     };
@@ -444,6 +404,9 @@
             window._uploadControllers[taskId].cancel();
             delete window._uploadControllers[taskId];
         }
+        if (task && typeof _deleteUploadFile === 'function') {
+            _deleteUploadFile(taskId).catch(function() {});
+        }
         removeTransferTask(taskId);
         renderAll();
     };
@@ -465,9 +428,11 @@
         var tasks = getTransferTasks();
         for (var i = 0; i < tasks.length; i++) {
             if (tasks[i].type === 'upload' && tasks[i].status === 'paused') {
-                updateTransferTask(tasks[i].id, { status: 'active' });
                 if (window._uploadControllers && window._uploadControllers[tasks[i].id]) {
+                    updateTransferTask(tasks[i].id, { status: 'active' });
                     window._uploadControllers[tasks[i].id].resume();
+                } else if (typeof resumeChunkedUpload === 'function') {
+                    resumeChunkedUpload(tasks[i].id);
                 }
             }
         }
@@ -489,6 +454,9 @@
                     window._uploadControllers[t.id].cancel();
                     delete window._uploadControllers[t.id];
                 }
+                if (typeof _deleteUploadFile === 'function') {
+                    _deleteUploadFile(t.id).catch(function() {});
+                }
                 removeTransferTask(t.id);
             }
         }
@@ -500,8 +468,15 @@
         for (var i = 0; i < tasks.length; i++) {
             if (tasks[i].type === 'download' && tasks[i].status === 'active') {
                 updateTransferTask(tasks[i].id, { status: 'paused' });
-                if (activeDownloads[tasks[i].id]) {
-                    activeDownloads[tasks[i].id].abort();
+                var ctrl = activeDownloads[tasks[i].id];
+                if (ctrl) {
+                    ctrl.abort();
+                    if (ctrl.chunks && ctrl.chunks.length > 0) {
+                        var blob = new Blob(ctrl.chunks.slice());
+                        if (typeof _storeUploadFile === 'function') {
+                            _storeUploadFile(tasks[i].id, blob).catch(function() {});
+                        }
+                    }
                     delete activeDownloads[tasks[i].id];
                 }
             }
@@ -511,13 +486,14 @@
 
     window.resumeAllDownloads = function() {
         var tasks = getTransferTasks();
+        var resumed = false;
         for (var i = 0; i < tasks.length; i++) {
             if (tasks[i].type === 'download' && tasks[i].status === 'paused') {
-                updateTransferTask(tasks[i].id, { status: 'active', progress: 0, receivedBytes: 0 });
-                performDownload(tasks[i].id, tasks[i].fileId, tasks[i].name, tasks[i].size);
+                window.resumeDownload(tasks[i].id);
+                resumed = true;
             }
         }
-        renderAll();
+        if (!resumed) renderAll();
     };
 
     window.deleteAllDownloads = function() {
@@ -528,6 +504,9 @@
                 if (activeDownloads[t.id]) {
                     activeDownloads[t.id].abort();
                     delete activeDownloads[t.id];
+                }
+                if (typeof _deleteUploadFile === 'function') {
+                    _deleteUploadFile(t.id).catch(function() {});
                 }
                 removeTransferTask(t.id);
             }
@@ -546,7 +525,11 @@
     };
 
     window.viewFileLocation = function(fileId) {
-        window.location.href = '/?highlight=' + fileId;
+        if (window.__routerNavigate) {
+            window.__routerNavigate('/?highlight=' + fileId);
+        } else {
+            window.location.href = '/?highlight=' + fileId;
+        }
     };
 
     function validateActiveUploads() {
@@ -578,12 +561,28 @@
         return Promise.all(promises).then(function() { return changed; });
     }
 
-    var mainContent = document.getElementById('mainContent');
-    if (mainContent) mainContent.classList.add('with-sub-sidebar');
-
     setupCategoryBars();
 
     validateActiveUploads().then(function() {
         renderAll();
+        if (typeof autoResumeTransfers === 'function') {
+            autoResumeTransfers();
+        }
     });
+
+    window._transferRefreshInterval = setInterval(function() {
+        if (!document.getElementById('uploadSection')) {
+            clearInterval(window._transferRefreshInterval);
+            delete window._transferRefreshInterval;
+            return;
+        }
+        if (document.visibilityState !== 'visible') return;
+        var tasks = getTransferTasks();
+        for (var i = 0; i < tasks.length; i++) {
+            if (tasks[i].status === 'active') {
+                renderAll();
+                return;
+            }
+        }
+    }, 1000);
 })();

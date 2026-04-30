@@ -1,13 +1,9 @@
-{{template "base.html" .}}
 {{define "title"}}传输 - NetworkDisk{{end}}
-{{define "sidebar"}}{{end}}
-{{define "sub_sidebar"}}
+{{define "content"}}
 <aside class="sub-sidebar" id="subSidebar">
     <a href="#" class="sub-sidebar-link active" data-section="upload" onclick="switchTransferSection('upload');return false;">上传</a>
     <a href="#" class="sub-sidebar-link" data-section="download" onclick="switchTransferSection('download');return false;">下载</a>
 </aside>
-{{end}}
-{{define "content"}}
 <div class="transfer-section active" id="uploadSection">
     <div class="category-bar" id="uploadCategoryBar">
         <button class="category-tab active" data-tab="uploading">上传中<span class="count-badge" id="uploadUploadingCount">0</span></button>
@@ -23,8 +19,7 @@
             <div class="file-list-header">
                 <span class="col-name">名称</span>
                 <span class="col-size">大小</span>
-                <span style="flex:0 0 auto;min-width:180px">状态</span>
-                <span class="col-actions">操作</span>
+                <span class="col-status">状态</span>
             </div>
             <div id="uploadUploadingList"></div>
         </div>
@@ -38,7 +33,6 @@
                 <span class="col-name">名称</span>
                 <span class="col-size">大小</span>
                 <span class="col-time">完成时间</span>
-                <span class="col-actions">操作</span>
             </div>
             <div id="uploadCompletedList"></div>
         </div>
@@ -60,8 +54,7 @@
             <div class="file-list-header">
                 <span class="col-name">名称</span>
                 <span class="col-size">大小</span>
-                <span style="flex:0 0 auto;min-width:180px">状态</span>
-                <span class="col-actions">操作</span>
+                <span class="col-status">状态</span>
             </div>
             <div id="downloadDownloadingList"></div>
         </div>
@@ -69,14 +62,12 @@
     <div class="transfer-tab-content" id="downloadCompletedTab">
         <div class="transfer-toolbar">
             <button class="btn btn-primary" style="background:var(--danger)" onclick="clearCompletedDownloads()">清空全部记录</button>
-        
         </div>
         <div class="card" style="padding:0">
             <div class="file-list-header">
                 <span class="col-name">名称</span>
                 <span class="col-size">大小</span>
                 <span class="col-time">完成时间</span>
-                <span class="col-actions">操作</span>
             </div>
             <div id="downloadCompletedList"></div>
         </div>

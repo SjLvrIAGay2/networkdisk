@@ -1,6 +1,8 @@
 package router
 
 import (
+	"bytes"
+	"encoding/json"
 	"html/template"
 	"net/http"
 
@@ -10,6 +12,38 @@ import (
 )
 
 type StopFunc func()
+
+type partialPage struct {
+	Title   string `json:"title"`
+	Content string `json:"content"`
+	Scripts string `json:"scripts"`
+}
+
+type pageTmpl struct {
+	full    *template.Template
+	partial *template.Template
+}
+
+func renderBlock(tmpl *template.Template, name string) string {
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, name, nil); err != nil {
+		return ""
+	}
+	return buf.String()
+}
+
+func (pt *pageTmpl) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("X-SPA-Partial") == "true" {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		json.NewEncoder(w).Encode(partialPage{
+			Title:   renderBlock(pt.partial, "title"),
+			Content: renderBlock(pt.partial, "content"),
+			Scripts: renderBlock(pt.partial, "scripts"),
+		})
+		return
+	}
+	pt.full.ExecuteTemplate(w, "base.html", nil)
+}
 
 func New(authH *handler.AuthHandler, fileH *handler.FileHandler, sysH *handler.SystemHandler, shareH *handler.ShareHandler, searchH *handler.SearchHandler, tagH *handler.TagHandler, cfg *config.Config) (http.Handler, StopFunc) {
 	authMw := middleware.Auth(cfg)
@@ -82,49 +116,57 @@ func New(authH *handler.AuthHandler, fileH *handler.FileHandler, sysH *handler.S
 	mux.Handle("GET /api/audit-logs", wrap(sysH.AuditLogs, authMw))
 	mux.Handle("GET /api/devices", wrap(sysH.Devices, authMw))
 
-	recycleTmpl := template.Must(template.ParseFiles("web/templates/base.html", "web/templates/recycle.html"))
-	mux.Handle("GET /recycle", wrap(func(w http.ResponseWriter, r *http.Request) {
-		recycleTmpl.ExecuteTemplate(w, "recycle.html", nil)
-	}, csrfMw))
+	indexTmpl := &pageTmpl{
+		full:    template.Must(template.ParseFiles("web/templates/base.html", "web/templates/index.html")),
+		partial: template.Must(template.ParseFiles("web/templates/partial.html", "web/templates/index.html")),
+	}
+	mux.Handle("GET /{$}", wrap(indexTmpl.ServeHTTP, csrfMw))
 
-	loginTmpl := template.Must(template.ParseFiles("web/templates/base.html", "web/templates/login.html"))
-	registerTmpl := template.Must(template.ParseFiles("web/templates/base.html", "web/templates/register.html"))
-	indexTmpl := template.Must(template.ParseFiles("web/templates/base.html", "web/templates/index.html"))
+	loginTmpl := template.Must(template.ParseFiles("web/templates/login.html"))
+	registerTmpl := template.Must(template.ParseFiles("web/templates/register.html"))
 
-	mux.Handle("GET /{$}", wrap(func(w http.ResponseWriter, r *http.Request) {
-		indexTmpl.ExecuteTemplate(w, "index.html", nil)
-	}, csrfMw))
 	mux.Handle("GET /login", wrap(func(w http.ResponseWriter, r *http.Request) {
-		loginTmpl.ExecuteTemplate(w, "login.html", nil)
+		loginTmpl.Execute(w, nil)
 	}, csrfMw))
 	mux.Handle("GET /register", wrap(func(w http.ResponseWriter, r *http.Request) {
-		registerTmpl.ExecuteTemplate(w, "register.html", nil)
+		registerTmpl.Execute(w, nil)
 	}, csrfMw))
 
-	sharesTmpl := template.Must(template.ParseFiles("web/templates/base.html", "web/templates/shares.html"))
-	mux.Handle("GET /shares", wrap(func(w http.ResponseWriter, r *http.Request) {
-		sharesTmpl.ExecuteTemplate(w, "shares.html", nil)
-	}, csrfMw))
+	sharesTmpl := &pageTmpl{
+		full:    template.Must(template.ParseFiles("web/templates/base.html", "web/templates/shares.html")),
+		partial: template.Must(template.ParseFiles("web/templates/partial.html", "web/templates/shares.html")),
+	}
+	mux.Handle("GET /shares", wrap(sharesTmpl.ServeHTTP, csrfMw))
 
-	dashboardTmpl := template.Must(template.ParseFiles("web/templates/base.html", "web/templates/dashboard.html"))
-	mux.Handle("GET /dashboard", wrap(func(w http.ResponseWriter, r *http.Request) {
-		dashboardTmpl.ExecuteTemplate(w, "dashboard.html", nil)
-	}, csrfMw))
+	dashboardTmpl := &pageTmpl{
+		full:    template.Must(template.ParseFiles("web/templates/base.html", "web/templates/dashboard.html")),
+		partial: template.Must(template.ParseFiles("web/templates/partial.html", "web/templates/dashboard.html")),
+	}
+	mux.Handle("GET /dashboard", wrap(dashboardTmpl.ServeHTTP, csrfMw))
 
-	searchTmpl := template.Must(template.ParseFiles("web/templates/base.html", "web/templates/search.html"))
-	mux.Handle("GET /search", wrap(func(w http.ResponseWriter, r *http.Request) {
-		searchTmpl.ExecuteTemplate(w, "search.html", nil)
-	}, csrfMw))
+	searchTmpl := &pageTmpl{
+		full:    template.Must(template.ParseFiles("web/templates/base.html", "web/templates/search.html")),
+		partial: template.Must(template.ParseFiles("web/templates/partial.html", "web/templates/search.html")),
+	}
+	mux.Handle("GET /search", wrap(searchTmpl.ServeHTTP, csrfMw))
 
-	auditTmpl := template.Must(template.ParseFiles("web/templates/base.html", "web/templates/admin_audit.html"))
-	mux.Handle("GET /audit", wrap(func(w http.ResponseWriter, r *http.Request) {
-		auditTmpl.ExecuteTemplate(w, "admin_audit.html", nil)
-	}, csrfMw))
+	auditTmpl := &pageTmpl{
+		full:    template.Must(template.ParseFiles("web/templates/base.html", "web/templates/admin_audit.html")),
+		partial: template.Must(template.ParseFiles("web/templates/partial.html", "web/templates/admin_audit.html")),
+	}
+	mux.Handle("GET /audit", wrap(auditTmpl.ServeHTTP, csrfMw))
 
-	transferTmpl := template.Must(template.ParseFiles("web/templates/base.html", "web/templates/transfer.html"))
-	mux.Handle("GET /transfer", wrap(func(w http.ResponseWriter, r *http.Request) {
-		transferTmpl.ExecuteTemplate(w, "transfer.html", nil)
-	}, csrfMw))
+	transferTmpl := &pageTmpl{
+		full:    template.Must(template.ParseFiles("web/templates/base.html", "web/templates/transfer.html")),
+		partial: template.Must(template.ParseFiles("web/templates/partial.html", "web/templates/transfer.html")),
+	}
+	mux.Handle("GET /transfer", wrap(transferTmpl.ServeHTTP, csrfMw))
+
+	recycleTmpl := &pageTmpl{
+		full:    template.Must(template.ParseFiles("web/templates/base.html", "web/templates/recycle.html")),
+		partial: template.Must(template.ParseFiles("web/templates/partial.html", "web/templates/recycle.html")),
+	}
+	mux.Handle("GET /recycle", wrap(recycleTmpl.ServeHTTP, csrfMw))
 
 	mux.Handle("GET /s/{token}", wrap(shareH.ServePublicPage))
 	mux.Handle("POST /s/{token}/verify", wrap(shareH.VerifyPassword, rateLimitMw))
@@ -188,4 +230,3 @@ func wrap(handler http.HandlerFunc, mws ...middlewareFunc) http.Handler {
 	}
 	return h
 }
-

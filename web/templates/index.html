@@ -1,11 +1,4 @@
-{{template "base.html" .}}
 {{define "title"}}文件 - NetworkDisk{{end}}
-{{define "nav-right"}}
-<span id="navUsername" style="font-size:14px;color:var(--text-secondary);"></span>
-<button onclick="handleLogout()" style="font-size:14px;color:var(--text);text-decoration:none;background:none;border:none;cursor:pointer;padding:6px 12px;border-radius:6px;">退出</button>
-<button id="themeToggle" class="theme-toggle" onclick="toggleTheme()">🌙</button>
-{{end}}
-{{define "sidebar"}}{{end}}
 {{define "content"}}
 <div>
     <div class="category-bar">
@@ -98,34 +91,24 @@
     </div>
 </div>
 
-<div id="moveCopyModal" class="modal-overlay" style="display:none;">
-    <div class="modal-panel">
-        <div class="modal-header">
-            <h3 id="moveCopyTitle">移动到</h3>
-            <button class="modal-close" onclick="hideMoveCopyModal()">&times;</button>
-        </div>
-        <div class="modal-body">
-            <div class="folder-picker-breadcrumb" id="pickerBreadcrumb">
-                <a href="#" onclick="navigatePickerTo(null);return false;">我的网盘</a>
-            </div>
-            <div class="folder-picker-list" id="pickerFolderList">
-                <div class="loading">加载中...</div>
-            </div>
-        </div>
-        <div class="modal-footer">
+<div id="moveCopyModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.4);z-index:200;align-items:center;justify-content:center;">
+    <div style="background:var(--surface);border-radius:8px;padding:24px;min-width:400px;max-height:80vh;display:flex;flex-direction:column;">
+        <h3 style="margin-bottom:16px;" id="moveCopyTitle">移动到</h3>
+        <div id="pickerBreadcrumb" style="margin-bottom:8px;font-size:13px;color:var(--text-secondary);"></div>
+        <div id="pickerFolderList" style="flex:1;overflow-y:auto;min-height:200px;"></div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
             <button class="btn" style="background:var(--border);" onclick="hideMoveCopyModal()">取消</button>
-            <button class="btn btn-primary" id="moveCopyConfirmBtn" onclick="confirmMoveCopy()">移动到此</button>
+            <button class="btn btn-primary" id="moveCopyConfirmBtn" onclick="confirmMoveCopy()">移动到此处</button>
         </div>
     </div>
 </div>
 
-<div id="detailModal" class="modal-overlay" style="display:none;">
-    <div class="modal-panel">
-        <div class="modal-header">
-            <h3>详细信息</h3>
-            <button class="modal-close" onclick="hideDetailModal()">&times;</button>
-        </div>
-        <div class="modal-body" id="detailBody">
+<div id="detailModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.4);z-index:200;align-items:center;justify-content:center;">
+    <div style="background:var(--surface);border-radius:8px;padding:24px;min-width:360px;max-width:480px;">
+        <h3 style="margin-bottom:16px;">详细信息</h3>
+        <div id="detailBody"></div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
+            <button class="btn" style="background:var(--border);" onclick="hideDetailModal()">关闭</button>
         </div>
     </div>
 </div>
@@ -134,149 +117,117 @@
 <script>
 var currentDir = null;
 var currentCategory = 'all';
-var renameFileId = null;
-var shareFileId = null;
 var _fileDataMap = {};
 var _lastBreadcrumb = [];
+var shareFileId = null;
+var renameFileId = null;
 var _openMoreFileId = null;
-var _pickerDir = null;
-var _pickerBreadcrumb = [];
 var _moveCopyFileId = null;
 var _moveCopyAction = '';
+var _pickerDir = null;
+var _pickerBreadcrumb = [];
 var _inlineRenameFileId = null;
 var _inlineRenameOriginal = '';
 
 (function() {
-    var token = localStorage.getItem('access_token');
-    if (!token) {
-        window.location.replace('/login');
-        return;
-    }
-    apiFetch('/api/auth/me', {}).then(function(r) {
-        if (!r.ok) {
-            localStorage.removeItem('access_token');
-            window.location.replace('/login');
-            return;
-        }
-        return r.json();
-    }).then(function(data) {
-        if (data && data.username) {
-            var el = document.getElementById('navUsername');
-            if (el) el.textContent = data.username;
-        }
-    }).catch(function() {
-        localStorage.removeItem('access_token');
-        window.location.replace('/login');
-    });
     switchCategory('all');
 })();
+
+function switchCategory(category) {
+    currentCategory = category;
+    currentDir = null;
+    document.querySelectorAll('.category-tab').forEach(function(t) { t.classList.remove('active'); });
+    var activeTab = document.querySelector('[data-category="' + category + '"]');
+    if (activeTab) activeTab.classList.add('active');
+    var toolbar = document.getElementById('toolbarDirActions');
+    var colTime = document.getElementById('colTime');
+    if (category === 'recycle') {
+        toolbar.style.display = 'none';
+        colTime.textContent = '删除时间';
+    } else if (category === 'shared') {
+        toolbar.style.display = 'none';
+        colTime.textContent = '分享时间';
+    } else {
+        toolbar.style.display = '';
+        colTime.textContent = '创建时间';
+    }
+    refreshFiles();
+}
 
 function navigateTo(dirId) {
     currentDir = dirId;
     refreshFiles();
 }
 
-function renderBreadcrumb(items) {
-    var bc = document.getElementById('breadcrumb');
-    var html = '<a href="#" onclick="navigateTo(null);return false;" style="color:var(--primary);text-decoration:none;">我的网盘</a>';
-    if (items && items.length > 0) {
-        for (var i = 0; i < items.length; i++) {
-            html += ' <span style="margin:0 4px;">/</span> ';
-            if (i === items.length - 1) {
-                html += '<span style="color:var(--text-secondary);">' + escapeHtml(items[i].name) + '</span>';
-            } else {
-                html += '<a href="#" onclick="navigateTo(' + items[i].id + ');return false;" style="color:var(--primary);text-decoration:none;">' + escapeHtml(items[i].name) + '</a>';
-            }
-        }
-    }
-    bc.innerHTML = html;
-}
-
-function switchCategory(category) {
-    currentCategory = category;
-    document.querySelectorAll('.category-tab').forEach(function(t) {
-        t.classList.toggle('active', t.dataset.category === category);
-    });
-    var breadcrumb = document.getElementById('breadcrumb');
-    var toolbarDir = document.getElementById('toolbarDirActions');
-    if (category === 'all') {
-        breadcrumb.style.display = 'block';
-        toolbarDir.style.display = 'inline';
-    } else {
-        breadcrumb.style.display = 'none';
-        toolbarDir.style.display = 'none';
-    }
-    document.getElementById('colTime').textContent = (category === 'recycle') ? '删除时间' : '创建时间';
-    if (category !== 'all') {
-        currentDir = null;
-    }
-    refreshFiles();
-}
-
 function refreshFiles() {
+    var container = document.getElementById('fileList');
+    container.innerHTML = '<div class="loading">加载中...</div>';
     var url;
-    switch (currentCategory) {
-        case 'all':
-            url = '/api/files';
-            if (currentDir !== null) url += '?dir_id=' + currentDir;
-            break;
-        case 'recent':
-            url = '/api/files/recent?limit=100';
-            break;
-        case 'document':
-        case 'image':
-        case 'video':
-            url = '/api/files?type=' + currentCategory;
-            break;
-        case 'shared':
-            url = '/api/files/shared';
-            break;
-        case 'recycle':
-            url = '/api/files/recycle';
-            break;
-        default:
-            url = '/api/files';
+    if (currentCategory === 'all') {
+        url = '/api/files';
+        if (currentDir !== null) url += '?dir_id=' + currentDir;
+    } else if (currentCategory === 'recent') {
+        url = '/api/files/recent';
+    } else if (currentCategory === 'shared') {
+        url = '/api/files/shared';
+    } else if (currentCategory === 'recycle') {
+        url = '/api/files/recycle';
+    } else {
+        url = '/api/files?type=' + currentCategory;
+        if (currentDir !== null) url += '&dir_id=' + currentDir;
     }
     apiFetch(url, {}).then(function(r) {
         if (!r.ok) throw new Error('failed');
         return r.json();
     }).then(function(data) {
+        var isAll = currentCategory === 'all';
+        var isRecycle = currentCategory === 'recycle';
+        var isShared = currentCategory === 'shared';
         _lastBreadcrumb = data.breadcrumb || [];
-        renderFiles(data.files);
-        renderBreadcrumb(data.breadcrumb);
+        renderBreadcrumb(_lastBreadcrumb);
+        var files = data.files || [];
+        _fileDataMap = {};
+        for (var i = 0; i < files.length; i++) {
+            _fileDataMap[files[i].id] = files[i];
+        }
+        if (files.length === 0) {
+            container.innerHTML = '<div class="empty-state">暂无文件</div>';
+            return;
+        }
+        renderFiles(files, container, isAll, isRecycle, isShared);
     }).catch(function() {
-        document.getElementById('fileList').innerHTML = '<div class="error-state">加载失败</div>';
+        container.innerHTML = '<div class="error-state">加载失败</div>';
     });
 }
 
-function renderFiles(files) {
-    if (currentCategory === 'recent') {
-        files = files.filter(function(f) { return !f.is_dir; });
+function renderBreadcrumb(breadcrumb) {
+    var html = '<a href="#" onclick="navigateTo(null);return false;" style="color:var(--primary);text-decoration:none;">我的网盘</a>';
+    for (var i = 0; i < breadcrumb.length; i++) {
+        html += ' / ';
+        if (i === breadcrumb.length - 1) {
+            html += '<span>' + escapeHtml(breadcrumb[i].name) + '</span>';
+        } else {
+            html += '<a href="#" onclick="navigateTo(' + breadcrumb[i].id + ');return false;" style="color:var(--primary);text-decoration:none;">' + escapeHtml(breadcrumb[i].name) + '</a>';
+        }
     }
-    var container = document.getElementById('fileList');
-    if (!files || files.length === 0) {
-        var emptyMsg = '暂无文件';
-        if (currentCategory === 'all') emptyMsg = '空目录';
-        else if (currentCategory === 'recent') emptyMsg = '暂无最近文件';
-        else if (currentCategory === 'shared') emptyMsg = '暂无分享';
-        else if (currentCategory === 'recycle') emptyMsg = '回收站为空';
-        container.innerHTML = '<div class="empty-state">' + emptyMsg + '</div>';
-        _fileDataMap = {};
-        return;
-    }
-    var isRecycle = (currentCategory === 'recycle');
-    var isAll = (currentCategory === 'all');
-    var isShared = (currentCategory === 'shared');
-    _fileDataMap = {};
+    document.getElementById('breadcrumb').innerHTML = html;
+}
+
+function renderFiles(files, container, isAll, isRecycle, isShared) {
     var html = '';
     for (var i = 0; i < files.length; i++) {
         var f = files[i];
-        _fileDataMap[f.id] = f;
         var icon = f.is_dir ? '📁' : '📄';
         var nameDisplay = escapeHtml(f.name);
         var sizeStr = f.is_dir ? '-' : formatSize(f.size);
-        var ts = isRecycle ? (f.deleted_at || '') : (f.created_at || '');
-        var timeStr = ts.substring(0, 10);
+        var timeStr = '';
+        if (isRecycle) {
+            timeStr = (f.deleted_at || '').substring(0, 10);
+        } else if (isShared) {
+            timeStr = (f.share_time || '').substring(0, 10);
+        } else {
+            timeStr = formatDateTime(f.created_at);
+        }
 
         var nameHtml;
         if (f.is_dir && isAll) {

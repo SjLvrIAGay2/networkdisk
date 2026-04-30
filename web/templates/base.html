@@ -108,6 +108,10 @@
         .sidebar a:hover {
             background: var(--sidebar-hover);
         }
+        .sidebar a.active {
+            background: var(--sidebar-active-bg);
+            color: var(--sidebar-active-text);
+        }
         .main-content {
             margin-left: var(--sidebar-width);
             margin-top: 56px;
@@ -180,19 +184,19 @@
 </head>
 <body>
     <nav class="navbar">
-        <a href="/" class="navbar-brand">NetworkDisk</a>
+        <a href="/" class="navbar-brand" data-spa="true">NetworkDisk</a>
         <div class="navbar-nav">
-            {{block "nav-right" .}}
+            <span id="navUsername" style="font-size:14px;color:var(--text-secondary);"></span>
+            <button onclick="handleLogout()" style="font-size:14px;color:var(--text);text-decoration:none;background:none;border:none;cursor:pointer;padding:6px 12px;border-radius:6px;">退出</button>
             <button id="themeToggle" class="theme-toggle" type="button" onclick="toggleTheme()">🌙</button>
-            {{end}}
         </div>
     </nav>
     <aside class="sidebar">
-        <a href="/">首页</a>
-        <a href="/transfer">传输</a>
-        {{block "sidebar" .}}{{end}}
+        <a href="/" data-spa="true" data-route="/">首页</a>
+        <a href="/transfer" data-spa="true" data-route="/transfer">传输</a>
+        <a href="/dashboard" data-spa="true" data-route="/dashboard">仪表盘</a>
+        <a href="/search" data-spa="true" data-route="/search">搜索</a>
     </aside>
-    {{block "sub_sidebar" .}}{{end}}
     <main class="main-content" id="mainContent">
         {{block "content" .}}{{end}}
     </main>
@@ -329,6 +333,7 @@
         }
     </script>
     <script src="/static/js/app.js"></script>
+    <script src="/static/js/router.js"></script>
     {{block "scripts" .}}{{end}}
 </body>
 </html>

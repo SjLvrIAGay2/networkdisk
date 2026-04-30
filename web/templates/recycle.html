@@ -1,15 +1,8 @@
-{{template "base.html" .}}
 {{define "title"}}回收站 - NetworkDisk{{end}}
-{{define "nav-right"}}
-<span id="navUsername" style="font-size:14px;color:var(--text-secondary);"></span>
-<button onclick="handleLogout()" style="font-size:14px;color:var(--text);text-decoration:none;background:none;border:none;cursor:pointer;padding:6px 12px;border-radius:6px;">退出</button>
-<button id="themeToggle" class="theme-toggle" onclick="toggleTheme()">🌙</button>
-{{end}}
-{{define "sidebar"}}{{end}}
 {{define "content"}}
 <div>
     <div class="toolbar" style="margin-bottom:16px;display:flex;align-items:center;gap:12px;">
-        <a href="/" class="btn" style="background:var(--surface);border:1px solid var(--border);text-decoration:none;color:var(--text);padding:8px 20px;border-radius:6px;font-size:14px;">返回文件</a>
+        <a href="/" data-spa="true" class="btn" style="background:var(--surface);border:1px solid var(--border);text-decoration:none;color:var(--text);padding:8px 20px;border-radius:6px;font-size:14px;">返回文件</a>
         <button class="btn" style="background:var(--surface);border:1px solid var(--border);" onclick="refreshRecycle()">刷新</button>
     </div>
     <div class="card" style="padding:0;">
@@ -32,15 +25,6 @@
 {{define "scripts"}}
 <script>
 (function() {
-    var token = localStorage.getItem('access_token');
-    if (!token) {
-        window.location.replace('/login');
-        return;
-    }
-    var el = document.getElementById('navUsername');
-    apiFetch('/api/auth/me', {}).then(function(r) { return r.json(); }).then(function(data) {
-        if (data && data.username && el) el.textContent = data.username;
-    }).catch(function() {});
     refreshRecycle();
 })();
 
