@@ -19,7 +19,7 @@ max_idle_conns = 10
 conn_max_lifetime = "5m"
 
 [storage]
-root = "/Volumes/.storage"
+root = "/storage"
 max_file_size = 4194304000
 thumbnail_max_size = 20971520
 thumbnail_quality = 80
@@ -36,7 +36,7 @@ detect_mime = true
 on_name_conflict = "rename"
 
 [auth]
-jwt_secret = "ucOfaMgA3pMB55ZdTOyKPVAKr+ZZlH4ktbZag26pThsG49kf23aLwv+7AYUdhw6SFINUj8FtVG3lwUvdkQVPew=="
+jwt_secret = ""
 jwt_expire = "15m"
 refresh_expire = "168h"
 bcrypt_cost = 12
