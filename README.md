@@ -357,8 +357,7 @@ go build -o server ./cmd/server
 │       └── error_500.html      # 500 错误页
 ├── config.example.toml         # 示例配置文件
 ├── go.mod
-├── go.sum
-└── CLAUDE.md                   # 项目开发规范
+└── go.sum
 ```
 
 ## 数据库迁移
